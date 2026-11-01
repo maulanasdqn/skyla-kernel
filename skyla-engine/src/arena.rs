@@ -29,6 +29,18 @@ pub struct Arena {
     pub n_split: u32,
     pub max_ctx: u32,
     pub kv_layout: KvLayout,
+    pub moe: MoeRegions,
+}
+
+#[derive(Clone, Copy)]
+pub struct MoeRegions {
+    pub logits: u32,
+    pub ids: u32,
+    pub weights: u32,
+    pub gate: u32,
+    pub up: u32,
+    pub down: u32,
+    pub stride: u32,
 }
 
 struct Layout {
@@ -65,6 +77,16 @@ impl Arena {
         let (part, s_part) = l.batched(c.n_head * n_split as usize * 130);
         let last = l.single(c.n_embd);
         let logits = l.single(c.n_vocab);
+        let stride = c.n_ff_expert.next_multiple_of(64);
+        let moe = MoeRegions {
+            logits: l.single(c.n_expert),
+            ids: l.single(c.n_expert_used),
+            weights: l.single(c.n_expert_used),
+            gate: l.single(stride * c.n_expert_used),
+            up: l.single(stride * c.n_expert_used),
+            down: l.single(s_embd as usize * c.n_expert_used),
+            stride: stride as u32,
+        };
 
         let memory = host_memory(ctx)?;
         let usage = BufferUsageFlags::STORAGE_BUFFER;
@@ -99,6 +121,7 @@ impl Arena {
             n_split,
             max_ctx: max_ctx as u32,
             kv_layout,
+            moe,
         })
     }
 

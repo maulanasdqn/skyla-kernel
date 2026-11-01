@@ -1,6 +1,6 @@
 use crate::arena::{Arena, ATTENTION_CHUNK, BATCH};
 use crate::kernels::Kernels;
-use crate::weights::{QMatrix, Weights};
+use crate::weights::{LayerWeights, QMatrix, Weights};
 use anyhow::Result;
 use skyla_gguf::DType;
 use skyla_ref::Config;
@@ -22,10 +22,53 @@ impl Graph<'_> {
         let o = m.off;
         let push = match (batched, m.dtype) {
             (true, _) => vec![o[0], o[1], o[2], o[3], x.0, y.0, m.n_in, m.n_out, x.1, y.1],
-            (false, DType::Q6K) => vec![o[0], o[1], o[2], o[3], x.0, y.0, m.n_in, m.n_out],
-            (false, _) => vec![o[0], o[1], x.0, y.0, m.n_in, m.n_out],
+            (false, DType::Q6K) => vec![o[0], o[1], o[2], o[3], x.0, y.0, m.n_in, m.n_out, 0, 0, 0],
+            (false, _) => vec![o[0], o[1], x.0, y.0, m.n_in, m.n_out, 0, 0, 0],
         };
         self.r.dispatch_set(mv.pipeline(accum), m.buf, [groups, 1, 1], &push);
+    }
+
+    fn experts(&self, m: QMatrix, x: (u32, u32), y: (u32, u32)) {
+        let units = match m.dtype {
+            DType::Q4K => m.n_in / 32,
+            DType::Q6K => m.n_in / 64,
+            _ => 64,
+        };
+        let (pipeline, rows_per_group) = self.k.matvec(m.dtype, false).experts(units);
+        let groups = m.n_out.div_ceil(rows_per_group);
+        let (o, ids) = (m.off, self.a.moe.ids);
+        let mut push = match m.dtype {
+            DType::Q6K => vec![o[0], o[1], o[2], o[3]],
+            _ => vec![o[0], o[1]],
+        };
+        push.extend([x.0, y.0, m.n_in, m.n_out, ids, x.1, y.1]);
+        let slots = self.c.n_expert_used as u32;
+        self.r.dispatch_set(pipeline, m.buf, [groups, slots, 1], &push);
+    }
+
+    fn moe(&self, lw: &LayerWeights, router: u32) {
+        let (a, c, m) = (self.a, self.c, self.a.moe);
+        let used = c.n_expert_used as u32;
+        let n_embd = c.n_embd as u32;
+        let n_expert = c.n_expert as u32;
+        let push = [a.n, router, m.logits, n_embd];
+        self.r.dispatch(&self.k.logits, [n_expert, 1, 1], &push);
+        self.stage("moe logits");
+        let push = [m.logits, m.ids, m.weights, n_expert, used];
+        self.r.dispatch(&self.k.route, [1, 1, 1], &push);
+        self.stage("moe route");
+        self.experts(lw.gate, (a.n, 0), (m.gate, m.stride));
+        self.experts(lw.up, (a.n, 0), (m.up, m.stride));
+        self.stage("experts gate+up");
+        let n = used * m.stride;
+        self.r
+            .dispatch(&self.k.silu, [n.div_ceil(256), 1, 1], &[m.gate, m.up, n, 0]);
+        self.stage("silu");
+        self.experts(lw.down, (m.gate, m.stride), (m.down, a.s_embd));
+        self.stage("experts down");
+        let push = [a.x, m.down, m.weights, n_embd, a.s_embd, used];
+        self.r.dispatch(&self.k.combine, [n_embd.div_ceil(256), 1, 1], &push);
+        self.stage("moe combine");
     }
 
     fn rmsnorm(&self, x: u32, w: u32, y: u32, tokens: u32) {
@@ -39,7 +82,7 @@ impl Graph<'_> {
         self.r.mark(label);
     }
 
-    fn layer(&self, l: usize, lw: &crate::weights::LayerWeights, w: &Weights) {
+    fn layer(&self, l: usize, lw: &LayerWeights, w: &Weights) {
         let (a, c, b, bt) = (self.a, self.c, self.b, self.batched);
         let emb = |off| (off, a.s_embd);
         self.rmsnorm(a.x, lw.attn_norm, a.n, b);
@@ -94,6 +137,10 @@ impl Graph<'_> {
 
         self.rmsnorm(a.x, lw.ffn_norm, a.n, b);
         self.stage("rmsnorm");
+        if let Some(router) = lw.router {
+            self.moe(lw, router);
+            return;
+        }
         self.matvec(lw.gate, emb(a.n), (a.gate, a.s_ff), false, bt);
         self.matvec(lw.up, emb(a.n), (a.up, a.s_ff), false, bt);
         self.stage("matvec gate+up");

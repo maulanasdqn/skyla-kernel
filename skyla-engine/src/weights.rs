@@ -26,6 +26,7 @@ pub struct LayerWeights {
     pub gate: QMatrix,
     pub up: QMatrix,
     pub down: QMatrix,
+    pub router: Option<u32>,
 }
 
 pub struct Weights {
@@ -44,7 +45,9 @@ impl Weights {
         let mut p = Planner::new(g, cap as usize);
         let rope = p.table(c.rope_freqs.clone());
         let out_norm = p.norm("output_norm.weight")?;
+        let moe = c.n_expert > 0;
         let mut norms = Vec::with_capacity(c.n_layer);
+        let mut routers = Vec::with_capacity(c.n_layer);
         for i in 0..c.n_layer {
             let n = |s: &str| format!("blk.{i}.{s}.weight");
             norms.push([
@@ -53,7 +56,12 @@ impl Weights {
                 p.norm(&n("attn_k_norm"))?,
                 p.norm(&n("ffn_norm"))?,
             ]);
+            routers.push(match moe {
+                true => Some(p.norm(&n("ffn_gate_inp"))?),
+                false => None,
+            });
         }
+        let ffn = |s: &str| if moe { format!("{s}_exps") } else { s.to_string() };
         let output = match g.tensors.contains_key("output.weight") {
             true => p.matrix("output.weight")?,
             false => p.matrix("token_embd.weight")?,
@@ -70,9 +78,10 @@ impl Weights {
                 wk: p.matrix(&n("attn_k"))?,
                 wv: p.matrix(&n("attn_v"))?,
                 wo: p.matrix(&n("attn_output"))?,
-                gate: p.matrix(&n("ffn_gate"))?,
-                up: p.matrix(&n("ffn_up"))?,
-                down: p.matrix(&n("ffn_down"))?,
+                gate: p.matrix(&n(&ffn("ffn_gate")))?,
+                up: p.matrix(&n(&ffn("ffn_up")))?,
+                down: p.matrix(&n(&ffn("ffn_down")))?,
+                router: routers[i],
             });
         }
 

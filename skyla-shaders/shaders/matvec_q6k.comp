@@ -1,16 +1,20 @@
 #version 450
 #extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 
 layout(local_size_x = LANES, local_size_y_id = 0) in;
 layout(constant_id = 1) const bool ACCUM = false;
 layout(constant_id = 2) const uint ROWS = 2;
+layout(constant_id = 3) const bool MOE = false;
+layout(constant_id = 4) const uint LPR = LANES;
 
 layout(std430, binding = 0) readonly buffer W { uvec4 w[]; };
 layout(std430, binding = 1) readonly buffer Wd { float16_t wd[]; };
 layout(std430, binding = 2) readonly buffer X { vec4 x4[]; };
 layout(std430, binding = 3) buffer Y { float y[]; };
+layout(std430, binding = 4) readonly buffer Ids { uint ids[]; };
 
 layout(push_constant) uniform Push {
     uint ql_off;
@@ -21,6 +25,9 @@ layout(push_constant) uniform Push {
     uint y_off;
     uint n_in;
     uint n_out;
+    uint ids_off;
+    uint x_stride;
+    uint y_stride;
 } p;
 
 vec4 q6(uint a, uint h, uint ashift, uint hshift) {
@@ -39,12 +46,28 @@ float dot16(uvec4 a, uvec4 h, uint ashift, uint hshift, uint xb) {
          + dot(q6(a.z, h.z, ashift, hshift), x4[xb + 2]) + dot(q6(a.w, h.w, ashift, hshift), x4[xb + 3]);
 }
 
+float reduce(float v) {
+    if (LPR == LANES) {
+        return subgroupAdd(v);
+    }
+    for (uint d = LPR / 2; d > 0; d /= 2) {
+        v += subgroupShuffleXor(v, d);
+    }
+    return v;
+}
+
 void main() {
-    uint first = (gl_WorkGroupID.x * gl_WorkGroupSize.y + gl_LocalInvocationID.y) * ROWS;
-    if (first >= p.n_out) {
+    uint lane = gl_LocalInvocationID.x % LPR;
+    uint sub = gl_LocalInvocationID.x / LPR;
+    uint wave = gl_WorkGroupID.x * gl_WorkGroupSize.y + gl_LocalInvocationID.y;
+    uint first = (wave * (LANES / LPR) + sub) * ROWS;
+    if (LPR == LANES && first >= p.n_out) {
         return;
     }
-    uint lane = gl_LocalInvocationID.x;
+    uint slot = gl_WorkGroupID.y;
+    uint base = MOE ? ids[p.ids_off + slot] * p.n_out : 0;
+    uint x_off = p.x_off + slot * p.x_stride;
+    uint y_off = p.y_off + slot * p.y_stride;
     uint units = p.n_in / 64;
     uint supers = p.n_in / 256;
 
@@ -53,15 +76,15 @@ void main() {
         acc[r] = 0.0;
     }
 
-    for (uint u = lane; u < units; u += LANES) {
+    for (uint u = lane; u < units; u += LPR) {
         uint sb = u / 4;
         uint half_ = (u % 4) / 2;
         uint li = u % 2;
-        uint xb = (p.x_off + sb * 256 + half_ * 128 + li * 16) / 4;
+        uint xb = (x_off + sb * 256 + half_ * 128 + li * 16) / 4;
         uint k = half_ * 8 + li;
 
         for (uint r = 0; r < ROWS; r++) {
-            uint row = min(first + r, p.n_out - 1);
+            uint row = base + min(first + r, p.n_out - 1);
             uint rs = row * supers + sb;
             uvec4 a = w[p.ql_off + rs * 8 + half_ * 4 + li];
             uvec4 b = w[p.ql_off + rs * 8 + half_ * 4 + 2 + li];
@@ -74,13 +97,13 @@ void main() {
     }
 
     for (uint r = 0; r < ROWS; r++) {
-        float total = subgroupAdd(acc[r]);
+        float total = reduce(acc[r]);
         uint row = first + r;
         if (lane == 0 && row < p.n_out) {
             if (ACCUM) {
-                y[p.y_off + row] += total;
+                y[y_off + row] += total;
             } else {
-                y[p.y_off + row] = total;
+                y[y_off + row] = total;
             }
         }
     }

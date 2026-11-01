@@ -6,13 +6,14 @@ use anyhow::{anyhow, Result};
 use skyla_engine::KvPrecision;
 use skyla_types::{Info, ModelEntry, ServerMessage, Settings};
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, RwLock};
 use tokio::sync::{mpsc as async_mpsc, oneshot};
 
 #[derive(Clone)]
 pub struct EngineHandle {
     jobs: mpsc::Sender<Job>,
-    catalog: Arc<Catalog>,
+    root: Arc<PathBuf>,
+    catalog: Arc<RwLock<Catalog>>,
 }
 
 fn unavailable<T>(_: T) -> AppError {
@@ -20,7 +21,8 @@ fn unavailable<T>(_: T) -> AppError {
 }
 
 impl EngineHandle {
-    pub fn spawn(model: PathBuf, catalog: Catalog, context: usize, kv: KvPrecision) -> Result<Self> {
+    pub fn spawn(model: PathBuf, root: PathBuf, context: usize, kv: KvPrecision) -> Result<Self> {
+        let catalog = Catalog::scan(&root);
         let (jobs, inbox) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::channel();
         let start = (catalog.id_of(&model), model);
@@ -33,8 +35,13 @@ impl EngineHandle {
             .map_err(|e| anyhow!(e))?;
         Ok(Self {
             jobs,
-            catalog: Arc::new(catalog),
+            root: Arc::new(root),
+            catalog: Arc::new(RwLock::new(catalog)),
         })
+    }
+
+    fn catalog(&self) -> Catalog {
+        self.catalog.read().map(|c| c.clone()).unwrap_or_default()
     }
 
     fn send(&self, job: Job) -> Result<(), AppError> {
@@ -42,7 +49,12 @@ impl EngineHandle {
     }
 
     pub fn models(&self) -> Vec<ModelEntry> {
-        self.catalog.models()
+        let fresh = Catalog::scan(&self.root);
+        let models = fresh.models();
+        if let Ok(mut c) = self.catalog.write() {
+            *c = fresh;
+        }
+        models
     }
 
     pub async fn info(&self) -> Result<Info, AppError> {
@@ -59,7 +71,7 @@ impl EngineHandle {
 
     pub async fn load(&self, id: &str) -> Result<Info, AppError> {
         let (entry, path) = self
-            .catalog
+            .catalog()
             .find(id)
             .ok_or_else(|| AppError::BadRequest(format!("unknown model {id}")))?;
         if !entry.supported {

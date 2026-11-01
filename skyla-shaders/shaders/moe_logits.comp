@@ -1,0 +1,29 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+layout(local_size_x = LANES) in;
+
+layout(std430, binding = 0) readonly buffer W { vec4 w4[]; };
+layout(std430, binding = 1) buffer A { vec4 a4[]; };
+layout(std430, binding = 2) buffer L { float logits[]; };
+
+layout(push_constant) uniform Push {
+    uint x_off;
+    uint router_off;
+    uint logits_off;
+    uint n_embd;
+} p;
+
+void main() {
+    uint e = gl_WorkGroupID.x;
+    uint lane = gl_LocalInvocationID.x;
+    uint row = (p.router_off + e * p.n_embd) / 4;
+    float s = 0.0;
+    for (uint i = lane; i < p.n_embd / 4; i += LANES) {
+        s += dot(w4[row + i], a4[p.x_off / 4 + i]);
+    }
+    s = subgroupAdd(s);
+    if (lane == 0) {
+        logits[p.logits_off + e] = s;
+    }
+}

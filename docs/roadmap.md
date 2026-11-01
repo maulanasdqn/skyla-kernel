@@ -102,7 +102,40 @@ exceeds 200 lines.
   chat template, streaming `skyla chat` with the `<think>` section shown separately, 8-bit
   KV cache with per-tensor precision choice and a 16k default context (done).
 - **M6 — Prefill.** Batched matrix-matrix kernels for prompt processing (done).
-- **M7 — MoE.** Expert routing and grouped expert matrix-vector for Qwen3-30B-A3B.
+- **M7 — MoE.** Expert routing and grouped expert matrix-vector for Qwen3-30B-A3B
+  (decode done; batched MoE prefill open).
+
+## M7 result: Qwen3-30B-A3B (qwen3moe)
+
+48 layers, 128 experts per layer, 8 routed per token (renormalized softmax over the
+chosen 8), expert FFN 768, GQA 32:4. The 17.5 GiB of packed weights load into 9 buffers
+in ~30 s; each token touches ~3B parameters.
+
+- The existing Q8_0/Q4_K/Q6_K matrix-vector kernels gained a `MOE` specialization: the
+  grid's second dimension is the expert slot and the weight row base is
+  `expert_id × n_out`, read from GPU memory, so one dispatch runs all 8 experts.
+- Routing is two kernels: router logits with one workgroup per expert, then a parallel
+  top-k (subgroup max/min over 256 lanes, 8 rounds) and softmax.
+- Expert `down` matrices are only 768 wide (24 Q4_K or 12 Q6_K units per row), which left
+  most of a wave idle. A `LPR` (lanes per row) specialization runs 2 or 4 rows per wave
+  with a shuffle-xor reduction per lane group; the host picks 64, 32 or 16 per matrix.
+- Correctness: greedy output matches llama.cpp's Vulkan backend token for token ("The
+  capital of France is Paris." then `<|im_end|>`) and the f32 CPU reference on every
+  step; the worst logit difference is ~1.9 with f16 or 8-bit values alike, likely from
+  near-tied routing decisions across 48 layers (not yet verified).
+
+| Step | Decode (tok/s) | GPU ms/token | Change |
+|---|---:|---:|---|
+| First working version | 8.88 | 104.6 | one-workgroup router: 20.7 ms |
+| Router logits on 128 workgroups | — | 105.8 | logits 3.8 ms, but serial top-k 19.7 ms |
+| Parallel top-k | — | 86.3 | routing ~4 ms total |
+| **Narrow-row expert kernels (`LPR`)** | **14.1** | **68.4** | expert down 28.7 → 14.6 ms |
+
+Bugs found by bisecting with a 1-layer model and comparing GPU arena values with the CPU
+reference: the router's softmax overwrote its own maximum (`top[0]`) in the first loop
+iteration, which left every expert choice right but every weight wrong.
+
+Prompt processing for MoE models still feeds one token per step (~12 tok/s).
 
 ## Baseline (llama.cpp b12032, Qwen3-0.6B Q8_0)
 

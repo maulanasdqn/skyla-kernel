@@ -1,13 +1,17 @@
 #version 450
 #extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
 
 layout(local_size_x = LANES, local_size_y_id = 0) in;
 layout(constant_id = 1) const bool ACCUM = false;
 layout(constant_id = 2) const uint ROWS = 2;
+layout(constant_id = 3) const bool MOE = false;
+layout(constant_id = 4) const uint LPR = LANES;
 
 layout(std430, binding = 0) readonly buffer W { uvec4 w[]; };
 layout(std430, binding = 1) readonly buffer X { vec4 x4[]; };
 layout(std430, binding = 2) buffer Y { float y[]; };
+layout(std430, binding = 3) readonly buffer Ids { uint ids[]; };
 
 layout(push_constant) uniform Push {
     uint qs_off;
@@ -16,6 +20,9 @@ layout(push_constant) uniform Push {
     uint y_off;
     uint n_in;
     uint n_out;
+    uint ids_off;
+    uint x_stride;
+    uint y_stride;
 } p;
 
 vec4 lo4(uint v) {
@@ -40,12 +47,28 @@ vec2 scale_min(uvec4 h, uint j) {
     return vec2(s, m);
 }
 
+float reduce(float v) {
+    if (LPR == LANES) {
+        return subgroupAdd(v);
+    }
+    for (uint d = LPR / 2; d > 0; d /= 2) {
+        v += subgroupShuffleXor(v, d);
+    }
+    return v;
+}
+
 void main() {
-    uint first = (gl_WorkGroupID.x * gl_WorkGroupSize.y + gl_LocalInvocationID.y) * ROWS;
-    if (first >= p.n_out) {
+    uint lane = gl_LocalInvocationID.x % LPR;
+    uint sub = gl_LocalInvocationID.x / LPR;
+    uint wave = gl_WorkGroupID.x * gl_WorkGroupSize.y + gl_LocalInvocationID.y;
+    uint first = (wave * (LANES / LPR) + sub) * ROWS;
+    if (LPR == LANES && first >= p.n_out) {
         return;
     }
-    uint lane = gl_LocalInvocationID.x;
+    uint slot = gl_WorkGroupID.y;
+    uint base = MOE ? ids[p.ids_off + slot] * p.n_out : 0;
+    uint x_off = p.x_off + slot * p.x_stride;
+    uint y_off = p.y_off + slot * p.y_stride;
     uint units = p.n_in / 32;
     uint supers = p.n_in / 256;
 
@@ -54,10 +77,10 @@ void main() {
         acc[r] = 0.0;
     }
 
-    for (uint u = lane; u < units; u += LANES) {
+    for (uint u = lane; u < units; u += LPR) {
         uint sb = u / 8;
         uint j = (u % 8) / 2;
-        uint xb = (p.x_off + sb * 256 + j * 64 + (u % 2) * 16) / 4;
+        uint xb = (x_off + sb * 256 + j * 64 + (u % 2) * 16) / 4;
         vec4 l0 = x4[xb], l1 = x4[xb + 1], l2 = x4[xb + 2], l3 = x4[xb + 3];
         vec4 h0 = x4[xb + 8], h1 = x4[xb + 9], h2 = x4[xb + 10], h3 = x4[xb + 11];
         vec4 one = vec4(1.0);
@@ -65,7 +88,7 @@ void main() {
         float sum_hi = dot(h0 + h1 + h2 + h3, one);
 
         for (uint r = 0; r < ROWS; r++) {
-            uint row = min(first + r, p.n_out - 1);
+            uint row = base + min(first + r, p.n_out - 1);
             uvec4 q = w[p.qs_off + row * units + u];
             uvec4 h = w[p.hd_off + row * supers + sb];
             vec2 dm = unpackHalf2x16(h.x);
@@ -78,13 +101,13 @@ void main() {
     }
 
     for (uint r = 0; r < ROWS; r++) {
-        float total = subgroupAdd(acc[r]);
+        float total = reduce(acc[r]);
         uint row = first + r;
         if (lane == 0 && row < p.n_out) {
             if (ACCUM) {
-                y[p.y_off + row] += total;
+                y[y_off + row] += total;
             } else {
-                y[p.y_off + row] = total;
+                y[y_off + row] = total;
             }
         }
     }

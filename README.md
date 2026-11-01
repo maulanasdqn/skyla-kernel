@@ -31,6 +31,7 @@ Other models on the same laptop (Skyla, 256-token prompt):
 
 | Model | Size | Generation | Prompt processing | Notes |
 |---|---:|---:|---:|---|
+| Qwen3-30B-A3B-Instruct-2507 (Q4_K_M, MoE) | 17.3 GB | 14.1 tok/s | ~12 tok/s | 128 experts, 8 active; best quality per token on this laptop. Prompt is fed one token at a time for now |
 | Qwen3-4B-Instruct-2507 (Q4_K_M) | 2.3 GB | 12.0 tok/s | 118 tok/s | No thinking; good for fast role-play and game characters |
 | DeepSeek-R1-0528-Qwen3-8B (Q4_K_M) | 4.7 GB | 7.6 tok/s | 60 tok/s | Reasoning model; writes a `<think>` section first |
 | Qwen3-0.6B (Q8_0) | 0.6 GB | 55 tok/s | 686 tok/s | Development model (llama.cpp: 44.5 / 436) |
@@ -113,7 +114,8 @@ set `GLSLC` if it is not found through `VULKAN_SDK` or `PATH`.
 
 ### Get models
 
-Any GGUF of the `qwen3` architecture with Q8_0, Q4_K or Q6_K weights works. Keep one
+Any GGUF of the `qwen3` or `qwen3moe` architecture with Q8_0, Q4_K or Q6_K weights works
+(abliterated variants included, e.g. Huihui-Qwen3-30B-A3B-Instruct-2507-abliterated). Keep one
 folder per model under a common directory so the browser UI can list them:
 
 ```powershell
@@ -307,9 +309,8 @@ which also holds every measurement behind the numbers above.
 
 ## Limitations
 
-- Dense `qwen3` models (head size 128) and three weight formats (Q8_0, Q4_K, Q6_K).
-  Mixture-of-experts `qwen3moe` (Qwen3-30B-A3B) is in progress: the CPU reference
-  supports it, the GPU engine does not yet.
+- `qwen3` and `qwen3moe` models (head size 128) in three weight formats (Q8_0, Q4_K,
+  Q6_K). MoE models decode on the GPU but process prompts one token at a time.
 - Batch size 1 for generation; one conversation at a time, shared by every browser tab.
 - Prefill slows on long contexts (about 40 tok/s at 4k tokens) because each query in a
   32-token chunk reads the KV cache separately.
@@ -321,10 +322,9 @@ which also holds every measurement behind the numbers above.
 
 ## Roadmap
 
-See [docs/roadmap.md](docs/roadmap.md). In progress: MoE on the GPU for
-Qwen3-30B-A3B-Instruct-2507. Next: share KV reads across a prefill chunk, an
-OpenAI-compatible endpoint for game engines, and a `skyla compile` step that runs the
-tactic sweeps on the target and stores the evidence.
+See [docs/roadmap.md](docs/roadmap.md). Next: batched prefill for MoE models, sharing KV
+reads across a prefill chunk, an OpenAI-compatible endpoint for game engines, and a
+`skyla compile` step that runs the tactic sweeps on the target and stores the evidence.
 
 ## License
 

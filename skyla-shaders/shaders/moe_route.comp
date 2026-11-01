@@ -1,0 +1,68 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_KHR_shader_subgroup_basic : require
+
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) buffer A { float a[]; };
+layout(std430, binding = 1) buffer Ids { uint ids[]; };
+
+layout(push_constant) uniform Push {
+    uint logits_off;
+    uint ids_off;
+    uint weights_off;
+    uint n_expert;
+    uint n_used;
+} p;
+
+shared float wave_value[256 / LANES];
+shared uint wave_index[256 / LANES];
+shared float chosen_value[16];
+shared uint chosen_index[16];
+
+void main() {
+    uint t = gl_LocalInvocationID.x;
+    uint waves = gl_NumSubgroups;
+    float v = t < p.n_expert ? a[p.logits_off + t] : -3e38;
+
+    for (uint k = 0; k < p.n_used; k++) {
+        float m = subgroupMax(v);
+        uint idx = subgroupMin(v == m ? t : 0xffffffffu);
+        if (gl_SubgroupInvocationID == 0) {
+            wave_value[gl_SubgroupID] = m;
+            wave_index[gl_SubgroupID] = idx;
+        }
+        memoryBarrierShared();
+        barrier();
+        if (t == 0) {
+            uint best = 0;
+            for (uint w = 1; w < waves; w++) {
+                bool larger = wave_value[w] > wave_value[best];
+                bool tie = wave_value[w] == wave_value[best] && wave_index[w] < wave_index[best];
+                if (larger || tie) {
+                    best = w;
+                }
+            }
+            chosen_value[k] = wave_value[best];
+            chosen_index[k] = wave_index[best];
+        }
+        memoryBarrierShared();
+        barrier();
+        if (t == chosen_index[k]) {
+            v = -3e38;
+        }
+    }
+
+    if (t != 0) {
+        return;
+    }
+    float largest = chosen_value[0];
+    float total = 0.0;
+    for (uint k = 0; k < p.n_used; k++) {
+        total += exp(chosen_value[k] - largest);
+    }
+    for (uint k = 0; k < p.n_used; k++) {
+        ids[p.ids_off + k] = chosen_index[k];
+        a[p.weights_off + k] = exp(chosen_value[k] - largest) / total;
+    }
+}
