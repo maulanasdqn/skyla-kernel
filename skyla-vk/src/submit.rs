@@ -41,7 +41,7 @@ impl Context {
 
         let result = self.submit_and_wait(|cmd| unsafe {
             device.cmd_reset_query_pool(cmd, pool, 0, reps * 2);
-            pipeline.bind(cmd);
+            pipeline.bind(cmd, 0);
             if !push.is_empty() {
                 device.cmd_push_constants(cmd, pipeline.layout, vk::ShaderStageFlags::COMPUTE, 0, push);
             }

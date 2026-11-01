@@ -15,17 +15,6 @@ fn inv_rms(x: &[f32], eps: f32) -> f32 {
     1.0 / (ms + eps).sqrt()
 }
 
-pub fn rope_neox(x: &mut [f32], pos: usize, theta: f32) {
-    let half = x.len() / 2;
-    for i in 0..half {
-        let freq = theta.powf(-2.0 * i as f32 / x.len() as f32);
-        let (sin, cos) = (pos as f32 * freq).sin_cos();
-        let (a, b) = (x[i], x[i + half]);
-        x[i] = a * cos - b * sin;
-        x[i + half] = a * sin + b * cos;
-    }
-}
-
 pub fn softmax(x: &mut [f32]) {
     let max = x.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let mut sum = 0.0;

@@ -32,7 +32,8 @@ Qwen3-0.6B carries over with different constants:
 | FFN size | 3072 | 12288 |
 | Vocabulary | 151 936 | 151 936 |
 | Weights per token | 633 MB (Q8_0) | 5.03 GB / 4.68 GiB (Q4_K_M: Q4_K + Q6_K blocks) |
-| Decode ceiling at 35 GB/s | ~55 tok/s | **~7.0 tok/s** |
+| Decode ceiling at 35 GB/s | ~55 tok/s | ~7.0 tok/s |
+| Decode ceiling at 42 GB/s (best observed placement) | ~66 tok/s | ~8.4 tok/s |
 
 R1 is a reasoning model and routinely writes thousands of tokens before answering, so
 long-context decode matters. An FP16 KV cache costs 144 KiB per token (36 layers × 2 ×
@@ -183,3 +184,41 @@ kernel; the multi-row kernel's best setting is 4 waves × 2 rows (+2%). The rema
 on this small model is per-dispatch ramp-up. The 8B target's matrices are 4–16× larger,
 which amortizes it; kernel fusion (norm into matvec, SiLU into the down projection) is
 planned for M4.
+
+## M3 result: DeepSeek-R1-0528-Qwen3-8B on the iGPU
+
+- Q4_K and Q6_K matrix-vector kernels. Q4_K keeps its 16-byte superblock header
+  (d, dmin, packed 6-bit scales) in one region and the nibbles in another, so traffic
+  stays at 144 bytes per 256 weights; the min term is folded in through Σx. Q6_K blocks
+  (210 bytes, not 16-byte aligned) are split into low-nibble, high-bit, scale and d
+  regions.
+- Weights are planned across several buffers (4455 MiB in 3, under the 2 GiB allocation
+  cap) with each matrix kept inside one buffer; each matvec pipeline holds one descriptor
+  set per weight buffer.
+- Token embedding is dequantized on the host straight from the memory-mapped GGUF into
+  the arena, which works for every quantization type.
+- YaRN RoPE scaling (factor 4, original context 32768, `mscale = 1 + 0.1·ln 4`) is
+  computed once into a per-pair frequency table shared by the CPU reference and the GPU.
+
+Correctness: the CPU reference matches **llama.cpp's Vulkan backend** to 3–4 decimals on
+the first-step distribution (" a" 0.2157 vs 0.2156). llama.cpp's own CPU backend
+disagrees with its Vulkan backend on this model (0.0858 for the same token), so the
+Vulkan backend is the oracle for the 8B model. The GPU engine matches the reference on
+12 of 12 greedy tokens, worst logit difference 0.05, validation layer clean.
+
+| R1-0528-Qwen3-8B Q4_K_M, decode | tok/s |
+|---|---:|
+| llama.cpp b12032, Vulkan | 4.00 |
+| llama.cpp b12032, CPU | 4.20 |
+| **Skyla (M3)** | **6.80** |
+
+Weight matvecs run at 29–32 GB/s. RMSNorm (one workgroup, 47 µs per call) costs 2.2%.
+
+### Finding: memory placement decides bandwidth
+
+The laptop pairs an 8 GB and a 32 GB module: the first 16 GB run dual-channel and the
+remaining 24 GB single-channel. Where Windows places a buffer's pages is outside Skyla's
+control, so measured bandwidth moves between runs. After M3, the same Q8_0 kernels that
+gave Qwen3-0.6B 41 tok/s gave 55 tok/s with the output projection reading at 42.6 GB/s,
+above the 35 GB/s measured in M0. The M0 roofline is therefore a placement-dependent
+lower bound, not a ceiling.

@@ -1,0 +1,91 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+layout(local_size_x = 64, local_size_y_id = 0) in;
+layout(constant_id = 1) const bool ACCUM = false;
+layout(constant_id = 2) const uint ROWS = 2;
+
+layout(std430, binding = 0) readonly buffer W { uvec4 w[]; };
+layout(std430, binding = 1) readonly buffer X { vec4 x4[]; };
+layout(std430, binding = 2) buffer Y { float y[]; };
+
+layout(push_constant) uniform Push {
+    uint qs_off;
+    uint hd_off;
+    uint x_off;
+    uint y_off;
+    uint n_in;
+    uint n_out;
+} p;
+
+vec4 lo4(uint v) {
+    return vec4(v & 15u, (v >> 8) & 15u, (v >> 16) & 15u, (v >> 24) & 15u);
+}
+
+vec4 hi4(uint v) {
+    return vec4((v >> 4) & 15u, (v >> 12) & 15u, (v >> 20) & 15u, v >> 28);
+}
+
+uint sbyte(uvec4 h, uint k) {
+    uint word = k < 4 ? h.y : (k < 8 ? h.z : h.w);
+    return (word >> (8 * (k & 3))) & 255u;
+}
+
+vec2 scale_min(uvec4 h, uint j) {
+    if (j < 4) {
+        return vec2(sbyte(h, j) & 63u, sbyte(h, j + 4) & 63u);
+    }
+    uint s = (sbyte(h, j + 4) & 15u) | ((sbyte(h, j - 4) >> 6) << 4);
+    uint m = (sbyte(h, j + 4) >> 4) | ((sbyte(h, j) >> 6) << 4);
+    return vec2(s, m);
+}
+
+void main() {
+    uint first = (gl_WorkGroupID.x * gl_WorkGroupSize.y + gl_LocalInvocationID.y) * ROWS;
+    if (first >= p.n_out) {
+        return;
+    }
+    uint lane = gl_LocalInvocationID.x;
+    uint units = p.n_in / 32;
+    uint supers = p.n_in / 256;
+
+    float acc[ROWS];
+    for (uint r = 0; r < ROWS; r++) {
+        acc[r] = 0.0;
+    }
+
+    for (uint u = lane; u < units; u += 64) {
+        uint sb = u / 8;
+        uint j = (u % 8) / 2;
+        uint xb = (p.x_off + sb * 256 + j * 64 + (u % 2) * 16) / 4;
+        vec4 l0 = x4[xb], l1 = x4[xb + 1], l2 = x4[xb + 2], l3 = x4[xb + 3];
+        vec4 h0 = x4[xb + 8], h1 = x4[xb + 9], h2 = x4[xb + 10], h3 = x4[xb + 11];
+        vec4 one = vec4(1.0);
+        float sum_lo = dot(l0 + l1 + l2 + l3, one);
+        float sum_hi = dot(h0 + h1 + h2 + h3, one);
+
+        for (uint r = 0; r < ROWS; r++) {
+            uint row = min(first + r, p.n_out - 1);
+            uvec4 q = w[p.qs_off + row * units + u];
+            uvec4 h = w[p.hd_off + row * supers + sb];
+            vec2 dm = unpackHalf2x16(h.x);
+            vec2 a = scale_min(h, 2 * j);
+            vec2 b = scale_min(h, 2 * j + 1);
+            float dl = dot(lo4(q.x), l0) + dot(lo4(q.y), l1) + dot(lo4(q.z), l2) + dot(lo4(q.w), l3);
+            float dh = dot(hi4(q.x), h0) + dot(hi4(q.y), h1) + dot(hi4(q.z), h2) + dot(hi4(q.w), h3);
+            acc[r] += dm.x * (a.x * dl + b.x * dh) - dm.y * (a.y * sum_lo + b.y * sum_hi);
+        }
+    }
+
+    for (uint r = 0; r < ROWS; r++) {
+        float total = subgroupAdd(acc[r]);
+        uint row = first + r;
+        if (lane == 0 && row < p.n_out) {
+            if (ACCUM) {
+                y[p.y_off + row] += total;
+            } else {
+                y[p.y_off + row] = total;
+            }
+        }
+    }
+}

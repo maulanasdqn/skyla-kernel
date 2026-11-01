@@ -10,9 +10,10 @@ pub fn run(path: &Path, prompt: &[u32], n: usize, max_ctx: usize, check: bool, p
     let t = Instant::now();
     let mut engine = Engine::new(&g, max_ctx, profile)?;
     println!(
-        "{} | {} MiB of packed weights | loaded in {:.2?}",
+        "{} | {} MiB of packed weights in {} buffers | loaded in {:.2?}",
         engine.device_name(),
         engine.weight_bytes() >> 20,
+        engine.weight_buffers(),
         t.elapsed()
     );
     match check {

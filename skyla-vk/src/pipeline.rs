@@ -8,11 +8,22 @@ pub struct Pipeline {
     pub layout: vk::PipelineLayout,
     set_layout: vk::DescriptorSetLayout,
     pool: vk::DescriptorPool,
-    set: vk::DescriptorSet,
+    sets: Vec<vk::DescriptorSet>,
 }
 
 impl Context {
     pub fn create_pipeline(&self, spirv: &[u8], n_buffers: u32, push_size: u32, spec: &[u32]) -> Result<Pipeline> {
+        self.create_pipeline_sets(spirv, n_buffers, push_size, spec, 1)
+    }
+
+    pub fn create_pipeline_sets(
+        &self,
+        spirv: &[u8],
+        n_buffers: u32,
+        push_size: u32,
+        spec: &[u32],
+        n_sets: u32,
+    ) -> Result<Pipeline> {
         let device = &self.device;
         let code = ash::util::read_spv(&mut std::io::Cursor::new(spirv))?;
         let module_info = vk::ShaderModuleCreateInfo::default().code(&code);
@@ -62,15 +73,16 @@ impl Context {
 
         let pool_sizes = [vk::DescriptorPoolSize::default()
             .ty(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(n_buffers.max(1))];
+            .descriptor_count(n_buffers.max(1) * n_sets)];
         let pool_info = vk::DescriptorPoolCreateInfo::default()
-            .max_sets(1)
+            .max_sets(n_sets)
             .pool_sizes(&pool_sizes);
         let pool = unsafe { device.create_descriptor_pool(&pool_info, None) }?;
+        let layouts = vec![set_layout; n_sets as usize];
         let alloc = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(pool)
-            .set_layouts(&set_layouts);
-        let set = unsafe { device.allocate_descriptor_sets(&alloc) }?[0];
+            .set_layouts(&layouts);
+        let sets = unsafe { device.allocate_descriptor_sets(&alloc) }?;
 
         Ok(Pipeline {
             device: device.clone(),
@@ -78,13 +90,17 @@ impl Context {
             layout,
             set_layout,
             pool,
-            set,
+            sets,
         })
     }
 }
 
 impl Pipeline {
     pub fn bind_buffers(&self, buffers: &[&Buffer]) {
+        self.bind_set_buffers(0, buffers);
+    }
+
+    pub fn bind_set_buffers(&self, set: usize, buffers: &[&Buffer]) {
         let infos: Vec<[vk::DescriptorBufferInfo; 1]> = buffers
             .iter()
             .map(|b| {
@@ -98,7 +114,7 @@ impl Pipeline {
             .enumerate()
             .map(|(i, info)| {
                 vk::WriteDescriptorSet::default()
-                    .dst_set(self.set)
+                    .dst_set(self.sets[set])
                     .dst_binding(i as u32)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .buffer_info(info)
@@ -107,12 +123,12 @@ impl Pipeline {
         unsafe { self.device.update_descriptor_sets(&writes, &[]) };
     }
 
-    pub fn bind(&self, cmd: vk::CommandBuffer) {
+    pub fn bind(&self, cmd: vk::CommandBuffer, set: usize) {
         let point = vk::PipelineBindPoint::COMPUTE;
         unsafe {
             self.device.cmd_bind_pipeline(cmd, point, self.pipeline);
             self.device
-                .cmd_bind_descriptor_sets(cmd, point, self.layout, 0, &[self.set], &[]);
+                .cmd_bind_descriptor_sets(cmd, point, self.layout, 0, &[self.sets[set]], &[]);
         }
     }
 }

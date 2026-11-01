@@ -21,7 +21,8 @@ layout(push_constant) uniform Push {
     uint n_head;
     uint n_kv;
     float eps;
-    float theta;
+    uint rope_off;
+    float mscale;
 } p;
 
 void main() {
@@ -49,9 +50,9 @@ void main() {
     x0 *= r * w[nw + t];
     x1 *= r * w[nw + t + 64];
 
-    float angle = float(pos) * pow(p.theta, -float(t) / 64.0);
-    float c = cos(angle);
-    float s = sin(angle);
+    float angle = float(pos) * w[p.rope_off + t];
+    float c = cos(angle) * p.mscale;
+    float s = sin(angle) * p.mscale;
     float y0 = x0 * c - x1 * s;
     float y1 = x0 * s + x1 * c;
 

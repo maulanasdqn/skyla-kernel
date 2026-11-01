@@ -23,7 +23,11 @@ pub struct Recorder<'a> {
 
 impl Recorder<'_> {
     pub fn dispatch(&self, p: &Pipeline, groups: [u32; 3], push: &[u32]) {
-        p.bind(self.cmd);
+        self.dispatch_set(p, 0, groups, push);
+    }
+
+    pub fn dispatch_set(&self, p: &Pipeline, set: usize, groups: [u32; 3], push: &[u32]) {
+        p.bind(self.cmd, set);
         if !push.is_empty() {
             let bytes: Vec<u8> = push.iter().flat_map(|w| w.to_le_bytes()).collect();
             unsafe {

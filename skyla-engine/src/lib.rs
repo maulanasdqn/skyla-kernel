@@ -2,6 +2,7 @@ mod arena;
 mod engine;
 mod graph;
 mod kernels;
+mod planner;
 mod weights;
 
 pub use engine::Engine;

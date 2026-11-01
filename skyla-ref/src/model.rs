@@ -1,5 +1,5 @@
-use crate::ops::{dot, rmsnorm, rmsnorm_inplace, rope_neox, silu, softmax};
-use crate::{Config, Matrix};
+use crate::ops::{dot, rmsnorm, rmsnorm_inplace, silu, softmax};
+use crate::{rope_neox, Config, Matrix};
 use anyhow::Result;
 use skyla_gguf::Gguf;
 
@@ -100,11 +100,11 @@ impl<'a> Model<'a> {
             layer.wv.matvec(&n, &mut v);
             for h in q.chunks_mut(hd) {
                 rmsnorm_inplace(h, &layer.q_norm, c.eps);
-                rope_neox(h, self.pos, c.rope_theta);
+                rope_neox(h, self.pos, &c.rope_freqs, c.rope_mscale);
             }
             for h in k.chunks_mut(hd) {
                 rmsnorm_inplace(h, &layer.k_norm, c.eps);
-                rope_neox(h, self.pos, c.rope_theta);
+                rope_neox(h, self.pos, &c.rope_freqs, c.rope_mscale);
             }
             self.k_cache[l].extend_from_slice(&k);
             self.v_cache[l].extend_from_slice(&v);
