@@ -3,7 +3,7 @@
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 
-layout(local_size_x = 64, local_size_y_id = 0) in;
+layout(local_size_x = LANES, local_size_y_id = 0) in;
 layout(constant_id = 1) const bool ACCUM = false;
 layout(constant_id = 2) const uint ROWS = 4;
 
@@ -40,7 +40,7 @@ void main() {
         acc[r] = 0.0;
     }
 
-    for (uint c = lane; c < chunks; c += 64) {
+    for (uint c = lane; c < chunks; c += LANES) {
         uint xb = x_base + c * 4;
         vec4 x0 = x4[xb];
         vec4 x1 = x4[xb + 1];

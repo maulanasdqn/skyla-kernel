@@ -17,7 +17,7 @@ layout(push_constant) uniform Push {
     uint stride;
 } p;
 
-shared float partial[16];
+shared float partial[1024 / LANES];
 
 void main() {
     uint tok = gl_WorkGroupID.y;
@@ -41,7 +41,7 @@ void main() {
     barrier();
 
     float total = 0.0;
-    for (uint i = 0; i < 16; i++) {
+    for (uint i = 0; i < 1024 / LANES; i++) {
         total += partial[i];
     }
     float r = inversesqrt(total / float(p.n) + p.eps);

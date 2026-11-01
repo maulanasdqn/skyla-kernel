@@ -32,6 +32,20 @@ Other models on the same laptop (Skyla, 256-token prompt):
 | DeepSeek-R1-0528-Qwen3-8B (Q4_K_M) | 4.7 GB | 7.6 tok/s | 60 tok/s | Reasoning model; writes a `<think>` section first |
 | Qwen3-0.6B (Q8_0) | 0.6 GB | 55 tok/s | 686 tok/s | Development model (llama.cpp: 44.5 / 436) |
 
+### Apple M5
+
+The same kernels run on an Apple M5 (10-core GPU, 16 GB unified memory) through MoltenVK,
+using 32-lane variants of the subgroup kernels. With the tactics tuned for Vega:
+
+| | R1-8B Q4_K_M | Qwen3-0.6B Q8_0 |
+|---|---:|---:|
+| Generation (tok/s) | 19–24 | 117 |
+| Prompt processing, 473 tokens (tok/s) | 100–114 | 1098 |
+| Worst logit error, default `--kv v8` | 0.13 | 0.13 |
+
+`skyla bench-bw` measures 134 GB/s on the GPU, so generation on the 8B model reaches
+roughly 70–90% of the roofline; the Vega tactics have not been re-tuned for this GPU.
+
 Generation is bound by memory bandwidth. The weight kernels read at 36–38 GB/s against a
 measured ~40 GB/s roofline, so Skyla runs at about 95% of what this memory system can
 deliver for a 5 GB model.
@@ -52,13 +66,19 @@ cores. Every design choice below follows from that and from the shared DDR4.
 
 ### Requirements
 
-- Windows 11 with an AMD Vulkan 1.3 driver
+- Windows 11 with an AMD Vulkan 1.3 driver, or macOS on Apple silicon with MoltenVK
 - [Rust](https://rustup.rs/) (stable, MSVC toolchain) and the Visual Studio C++ Build Tools
 - [Vulkan SDK](https://vulkan.lunarg.com/) (provides `glslc` and the validation layer)
 
 ```powershell
 winget install Rustlang.Rustup KhronosGroup.VulkanSDK
 winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
+On macOS:
+
+```sh
+brew install molten-vk vulkan-loader shaderc
 ```
 
 ### Build
@@ -155,7 +175,9 @@ Hmm, user is asking for the multiplication of 17 and 23 with a request for a sho
 | `--system` | none | System prompt |
 
 Environment: `SKYLA_VALIDATION=1` enables the Khronos validation layer, `SKYLA_DEVICE=<n>`
-selects a device other than the first integrated GPU.
+selects a device other than the first integrated GPU. On macOS the Vulkan loader is found
+in `/opt/homebrew/lib`, `/usr/local/lib` or `$VULKAN_SDK/lib`; Homebrew's validation layer
+also needs `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`.
 
 ## How it works
 
@@ -242,7 +264,7 @@ token and the largest logit difference at every step, with the Vulkan validation
 | Crate | Role |
 |---|---|
 | `skyla-vk` | Minimal Vulkan layer: device, buffers, specialized pipelines with several descriptor sets, recorded and replayed command buffers, GPU timestamps |
-| `skyla-shaders` | GLSL compute kernels, compiled to SPIR-V at build time |
+| `skyla-shaders` | GLSL compute kernels, compiled to SPIR-V at build time, with 64- and 32-lane variants of the subgroup kernels |
 | `skyla-gguf` | Memory-mapped GGUF reader and F32/F16/Q8_0/Q4_K/Q6_K dequantization |
 | `skyla-ref` | f32 CPU reference forward pass and YaRN RoPE tables |
 | `skyla-tok` | Byte-level BPE tokenizer read from GGUF metadata |
@@ -267,8 +289,9 @@ which also holds every measurement behind the numbers above.
   32-token chunk reads the KV cache separately.
 - Earlier turns keep their `<think>` text in context, unlike the reference chat template,
   to avoid re-processing them.
-- Tuned for one laptop. It runs on other Vulkan 1.3 GPUs with FP16 and 8/16-bit storage,
-  but its tactics were chosen on this one.
+- Tuned for one laptop. It runs on other Vulkan 1.3 GPUs with FP16, 8/16-bit storage and
+  a subgroup size of 32 or 64 (checked on the Vega 8 and on an Apple M5), but its tactics
+  were chosen on the Vega.
 
 ## Roadmap
 

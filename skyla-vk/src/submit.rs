@@ -32,7 +32,7 @@ impl Context {
         let device = &self.device;
         let pool_info = vk::QueryPoolCreateInfo::default()
             .query_type(vk::QueryType::TIMESTAMP)
-            .query_count(reps * 2);
+            .query_count(reps + 1);
         let pool = unsafe { device.create_query_pool(&pool_info, None) }?;
         let barrier = vk::MemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::SHADER_WRITE)
@@ -40,15 +40,14 @@ impl Context {
         let compute = vk::PipelineStageFlags::COMPUTE_SHADER;
 
         let result = self.submit_and_wait(|cmd| unsafe {
-            device.cmd_reset_query_pool(cmd, pool, 0, reps * 2);
+            device.cmd_reset_query_pool(cmd, pool, 0, reps + 1);
             pipeline.bind(cmd, 0);
             if !push.is_empty() {
                 device.cmd_push_constants(cmd, pipeline.layout, vk::ShaderStageFlags::COMPUTE, 0, push);
             }
+            device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, pool, 0);
             for r in 0..reps {
-                device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, pool, r * 2);
                 device.cmd_dispatch(cmd, groups[0], groups[1], groups[2]);
-                device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::BOTTOM_OF_PIPE, pool, r * 2 + 1);
                 device.cmd_pipeline_barrier(
                     cmd,
                     compute,
@@ -58,10 +57,11 @@ impl Context {
                     &[],
                     &[],
                 );
+                device.cmd_write_timestamp(cmd, vk::PipelineStageFlags::BOTTOM_OF_PIPE, pool, r + 1);
             }
         });
 
-        let mut stamps = vec![0u64; (reps * 2) as usize];
+        let mut stamps = vec![0u64; (reps + 1) as usize];
         let flags = vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT;
         let read = result
             .and_then(|_| unsafe { device.get_query_pool_results(pool, 0, &mut stamps, flags) }.map_err(Into::into));
@@ -70,10 +70,8 @@ impl Context {
 
         let period = self.props.limits.timestamp_period as f64;
         Ok(stamps
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|[start, end]| end.wrapping_sub(*start) as f64 * period)
+            .windows(2)
+            .map(|w| w[1].wrapping_sub(w[0]) as f64 * period)
             .collect())
     }
 }

@@ -314,6 +314,34 @@ Prefill slows with context (39.7 tok/s at 4k vs 60 at short prompts) because eac
 the 32 batched queries reads the whole KV cache separately; sharing KV reads across
 the batch is the next prefill improvement.
 
+## Port: Apple M5 through MoltenVK
+
+Apple GPUs run 32-lane SIMD groups, and every subgroup reduction here was written for
+wave64: on the M5 each `subgroupAdd` summed only half of a row, and the first run
+disagreed with the reference on every token (worst logit error 26). Kernels that reduce
+across a subgroup (`matvec_*`, `attention`, `qkv_prep`, `rmsnorm`) now take a `LANES`
+macro; `build.rs` compiles them twice, `NAME` with 64 lanes (the Vega code) and
+`NAME_W32` with 32, and the engine picks by the device's subgroup size. With 32 lanes,
+attention holds 4 head dimensions per lane instead of 2 and QK-norm/RoPE handles two
+rotation pairs per lane. Other host changes: the instance enables
+`VK_KHR_portability_enumeration`, the device enables `VK_KHR_portability_subset`, weight
+buffers are capped at `maxStorageBufferRange` (4 GiB on MoltenVK, below its 8.9 GiB
+allocation limit), and `time_dispatch` uses consecutive bottom-of-pipe timestamps,
+because MoltenVK cannot timestamp around a single dispatch (`bench-bw` reported 6500 GB/s).
+
+| Apple M5, MoltenVK 1.4 | Worst logit error (`f16` / `v8` / `q8`) | Decode | Prefill (473 tok) |
+|---|---|---:|---:|
+| Qwen3-0.6B Q8_0 | 0.03 / 0.13 / 1.61 | 117 tok/s | 1098 tok/s |
+| Qwen3-0.6B Q4_K_M | 0.05 / 0.17 / 1.59 | 122 tok/s | 1281 tok/s |
+| R1-8B Q4_K_M (2 weight buffers) | – / 0.13 / – | 19–24 tok/s | 100–114 tok/s |
+
+Errors are against the CPU reference over 24 steps (R1-8B: 16), all with zero top-1
+disagreements; a 473-token prompt over 80 steps ran clean under the validation layer.
+GPU read bandwidth is 134 GB/s. On R1-8B the Q4_K gate+up matvec reads at ~87 GB/s and
+the Q6_K output head at ~108 GB/s. A sweep of K-quant tactics (waves × rows) gave
+17–24 tok/s with run-to-run noise larger than the differences, so the Vega tactics stay
+until a controlled A/B says otherwise.
+
 ### Finding: memory placement decides bandwidth
 
 The laptop pairs an 8 GB and a 32 GB module: the first 16 GB run dual-channel and the
