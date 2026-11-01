@@ -10,6 +10,7 @@ console_error_panic_hook.workspace = true
 futures.workspace = true
 gloo-net.workspace = true
 leptos.workspace = true
+pulldown-cmark.workspace = true
 serde_json.workspace = true
 skyla-types.workspace = true
 web-sys.workspace = true

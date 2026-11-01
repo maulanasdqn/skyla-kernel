@@ -1,3 +1,4 @@
+use crate::markdown;
 use crate::state::{Chat, Turn};
 use leptos::prelude::*;
 use skyla_types::Stats;
@@ -37,7 +38,7 @@ pub fn MessageView(turn: Turn) -> impl IntoView {
             <Show when=has_thinking>
                 <details class="thinking" open=true>
                     <summary>{label}</summary>
-                    <div class="thought">{move || turn.thinking.get()}</div>
+                    <div class="thought markdown" inner_html=move || turn.thinking.with(|t| markdown::render(t))></div>
                 </details>
             </Show>
             <Show when=move || !has_thinking() && !answering() && !finished()>
@@ -47,7 +48,7 @@ pub fn MessageView(turn: Turn) -> impl IntoView {
                     <span></span>
                 </div>
             </Show>
-            <div class="answer">{move || turn.text.get()}</div>
+            <div class="answer markdown" inner_html=move || turn.text.with(|t| markdown::render(t))></div>
             {move || turn.error.get().map(|e| view! { <div class="error">{e}</div> })}
             {move || turn.stats.get().map(|s| view! { <div class="stats">{describe(&s)}</div> })}
         </div>
