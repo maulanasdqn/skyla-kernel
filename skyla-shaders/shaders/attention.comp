@@ -1,0 +1,69 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+layout(local_size_x = 64) in;
+layout(constant_id = 0) const uint N_REP = 2;
+layout(constant_id = 1) const uint CHUNK = 64;
+
+layout(std430, binding = 0) buffer A { float a[]; };
+layout(std430, binding = 1) readonly buffer C { uint ctl[]; };
+layout(std430, binding = 2) readonly buffer KV { f16vec2 kv[]; };
+
+layout(push_constant) uniform Push {
+    uint q_off;
+    uint part_off;
+    uint kc_off;
+    uint vc_off;
+    uint n_kv;
+    uint n_split;
+    float scale;
+} p;
+
+void main() {
+    uint kvh = gl_WorkGroupID.x;
+    uint split = gl_WorkGroupID.y;
+    uint lane = gl_LocalInvocationID.x;
+    uint n_pos = ctl[1] + 1;
+    uint row = p.n_kv * 64;
+    uint k_base = p.kc_off / 2 + kvh * 64 + lane;
+    uint v_base = p.vc_off / 2 + kvh * 64 + lane;
+
+    vec2 q[N_REP];
+    float m[N_REP];
+    float l[N_REP];
+    vec2 acc[N_REP];
+    for (uint j = 0; j < N_REP; j++) {
+        uint qb = p.q_off + (kvh * N_REP + j) * 128 + lane * 2;
+        q[j] = vec2(a[qb], a[qb + 1]) * p.scale;
+        m[j] = -1e30;
+        l[j] = 0.0;
+        acc[j] = vec2(0.0);
+    }
+
+    uint end = min(split * CHUNK + CHUNK, n_pos);
+    for (uint i = split * CHUNK; i < end; i++) {
+        vec2 k = vec2(kv[k_base + i * row]);
+        vec2 v = vec2(kv[v_base + i * row]);
+        for (uint j = 0; j < N_REP; j++) {
+            float s = subgroupAdd(dot(q[j], k));
+            float mn = max(m[j], s);
+            float c = exp(m[j] - mn);
+            float e = exp(s - mn);
+            l[j] = l[j] * c + e;
+            acc[j] = acc[j] * c + e * v;
+            m[j] = mn;
+        }
+    }
+
+    for (uint j = 0; j < N_REP; j++) {
+        uint base = p.part_off + ((kvh * N_REP + j) * p.n_split + split) * 130;
+        if (lane == 0) {
+            a[base] = m[j];
+            a[base + 1] = l[j];
+        }
+        a[base + 2 + lane * 2] = acc[j].x;
+        a[base + 3 + lane * 2] = acc[j].y;
+    }
+}

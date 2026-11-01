@@ -74,6 +74,7 @@ Crates:
 | `skyla-cli` | `skyla` binary: probe, benchmarks, compile, run |
 | `skyla-gguf` | Memory-mapped GGUF reader with F32, F16, Q8_0, Q4_K and Q6_K dequantization |
 | `skyla-ref` | Plain CPU forward pass, the correctness oracle |
+| `skyla-engine` | Packed weights, static arena, recorded decode graph, `Engine::step` |
 | `skyla-compiler` (M4) | Contracts, tactic selection, layout and memory planning |
 
 All crates sit at the repository root. Code carries no comments and no source file
@@ -152,3 +153,33 @@ b12032 CPU greedy output teacher-forced through `skyla ref --expect`:
 - 23 of 24 steps agree on top-1. The one disagreement is a near-tie: Skyla gives
   "France" 0.1799 and "Italy" 0.1680, llama.cpp picks "Italy".
 - The f32 reference decodes at 3.4 tok/s on the CPU; it is an oracle, not an engine.
+
+## M2 result: full decode on the iGPU
+
+`skyla-engine` packs Q8_0 weights into a kernel-native layout (int8 quants and f16
+scales in separate, 16-byte aligned regions of one buffer), plans every activation at
+a fixed offset in one arena, and records the whole decode step into a single command
+buffer that is replayed per token; the token and position live in GPU memory.
+
+Kernels: multi-row Q8_0 matrix-vector (wave64, one `uvec4` of weights per lane per
+step), RMSNorm, fused QK-norm + RoPE + KV-cache write, split-K decode attention with
+online softmax and GQA sharing, attention merge, SiLU·mul, Q8_0 embedding.
+
+Correctness (`skyla run --check`, Khronos validation layer on): 80 of 80 greedy tokens
+match the CPU reference, worst logit difference 0.024 (f16 KV cache).
+
+Speed on Qwen3-0.6B Q8_0 (`skyla run -n 129`): **41.3 tok/s** vs llama.cpp 44.5 tok/s.
+`skyla run --profile` for one decode step at position ~133 (23.3 ms):
+
+| Stage | Share | Notes |
+|---|---:|---|
+| Matrix-vector, per layer | ~70% | 28–31 GB/s; each dispatch reads only 2–7 MB, so ramp-up and tail cost ~10% |
+| Output projection | ~21% | 34.6 GB/s, at the roofline |
+| Attention + merge | ~6% | 27 GB/s of KV reads at position 1500 after the split-K rewrite (was 2.3 ms at position 133) |
+| Norms, RoPE, SiLU, embedding | ~2% | |
+
+Tactic sweeps: rows per workgroup (1–16) made no difference for the one-row-per-wave
+kernel; the multi-row kernel's best setting is 4 waves × 2 rows (+2%). The remaining gap
+on this small model is per-dispatch ramp-up. The 8B target's matrices are 4–16× larger,
+which amortizes it; kernel fusion (norm into matvec, SiLU into the down projection) is
+planned for M4.

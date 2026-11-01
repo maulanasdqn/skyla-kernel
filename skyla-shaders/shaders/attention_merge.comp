@@ -1,0 +1,35 @@
+#version 450
+
+layout(local_size_x = 128) in;
+
+layout(std430, binding = 0) buffer A { float a[]; };
+layout(std430, binding = 1) readonly buffer C { uint ctl[]; };
+
+layout(push_constant) uniform Push {
+    uint part_off;
+    uint o_off;
+    uint n_split;
+    uint chunk;
+} p;
+
+void main() {
+    uint h = gl_WorkGroupID.x;
+    uint t = gl_LocalInvocationID.x;
+    uint used = (ctl[1] + p.chunk) / p.chunk;
+    uint first = p.part_off + h * p.n_split * 130;
+
+    float big = -1e30;
+    for (uint s = 0; s < used; s++) {
+        big = max(big, a[first + s * 130]);
+    }
+
+    float total = 0.0;
+    float o = 0.0;
+    for (uint s = 0; s < used; s++) {
+        uint base = first + s * 130;
+        float w = exp(a[base] - big);
+        total += w * a[base + 1];
+        o += w * a[base + 2 + t];
+    }
+    a[p.o_off + h * 128 + t] = o / total;
+}

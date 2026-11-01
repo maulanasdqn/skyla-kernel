@@ -203,6 +203,18 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "skyla-engine",
+ "skyla-gguf",
+ "skyla-ref",
+ "skyla-shaders",
+ "skyla-vk",
+]
+
+[[package]]
+name = "skyla-engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
  "skyla-gguf",
  "skyla-ref",
  "skyla-shaders",

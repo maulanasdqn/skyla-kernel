@@ -16,6 +16,16 @@ impl Buffer {
         self.mapped
             .map(|p| unsafe { std::slice::from_raw_parts_mut(p, self.size as usize) })
     }
+
+    pub fn as_f32(&self) -> Option<&[f32]> {
+        self.mapped
+            .map(|p| unsafe { std::slice::from_raw_parts(p as *const f32, self.size as usize / 4) })
+    }
+
+    pub fn as_u32_mut(&mut self) -> Option<&mut [u32]> {
+        self.mapped
+            .map(|p| unsafe { std::slice::from_raw_parts_mut(p as *mut u32, self.size as usize / 4) })
+    }
 }
 
 impl Drop for Buffer {

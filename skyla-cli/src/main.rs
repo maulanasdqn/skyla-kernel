@@ -2,6 +2,7 @@ mod bench;
 mod inspect;
 mod probe;
 mod reference;
+mod run;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -50,6 +51,25 @@ enum Command {
         )]
         expect: Vec<u32>,
     },
+    #[command(about = "Greedy-decode on the GPU engine")]
+    Run {
+        model: PathBuf,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            required = true,
+            help = "Prompt as comma-separated token ids"
+        )]
+        tokens: Vec<u32>,
+        #[arg(short, default_value_t = 32, help = "Tokens to generate")]
+        n: usize,
+        #[arg(long, default_value_t = 2048, help = "Maximum context length (KV cache size)")]
+        ctx: usize,
+        #[arg(long, help = "Run the CPU reference in lockstep and compare logits every step")]
+        check: bool,
+        #[arg(long, help = "Time every stage of the last decode step with GPU timestamps")]
+        profile: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -63,5 +83,13 @@ fn main() -> Result<()> {
             n,
             expect,
         } => reference::run(&model, &tokens, n, &expect),
+        Command::Run {
+            model,
+            tokens,
+            n,
+            ctx,
+            check,
+            profile,
+        } => run::run(&model, &tokens, n, ctx, check, profile),
     }
 }

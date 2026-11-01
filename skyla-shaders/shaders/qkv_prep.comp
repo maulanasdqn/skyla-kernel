@@ -1,0 +1,66 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) readonly buffer W { float w[]; };
+layout(std430, binding = 1) buffer A { float a[]; };
+layout(std430, binding = 2) readonly buffer C { uint ctl[]; };
+layout(std430, binding = 3) buffer KV { float16_t kv[]; };
+
+layout(push_constant) uniform Push {
+    uint q_off;
+    uint k_off;
+    uint v_off;
+    uint qn_off;
+    uint kn_off;
+    uint kc_off;
+    uint vc_off;
+    uint n_head;
+    uint n_kv;
+    float eps;
+    float theta;
+} p;
+
+void main() {
+    uint h = gl_WorkGroupID.x;
+    uint t = gl_LocalInvocationID.x;
+    uint pos = ctl[1];
+    uint kv_dim = p.n_kv * 128;
+
+    if (h >= p.n_head + p.n_kv) {
+        uint vh = h - p.n_head - p.n_kv;
+        uint dst = p.vc_off + pos * kv_dim + vh * 128;
+        kv[dst + t] = float16_t(a[p.v_off + vh * 128 + t]);
+        kv[dst + t + 64] = float16_t(a[p.v_off + vh * 128 + t + 64]);
+        return;
+    }
+
+    bool is_q = h < p.n_head;
+    uint head = is_q ? h : h - p.n_head;
+    uint src = (is_q ? p.q_off : p.k_off) + head * 128;
+    uint nw = is_q ? p.qn_off : p.kn_off;
+
+    float x0 = a[src + t];
+    float x1 = a[src + t + 64];
+    float r = inversesqrt(subgroupAdd(x0 * x0 + x1 * x1) / 128.0 + p.eps);
+    x0 *= r * w[nw + t];
+    x1 *= r * w[nw + t + 64];
+
+    float angle = float(pos) * pow(p.theta, -float(t) / 64.0);
+    float c = cos(angle);
+    float s = sin(angle);
+    float y0 = x0 * c - x1 * s;
+    float y1 = x0 * s + x1 * c;
+
+    if (is_q) {
+        a[src + t] = y0;
+        a[src + t + 64] = y1;
+    } else {
+        uint dst = p.kc_off + pos * kv_dim + head * 128;
+        kv[dst + t] = float16_t(y0);
+        kv[dst + t + 64] = float16_t(y1);
+    }
+}

@@ -1,0 +1,68 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+layout(local_size_x = 64, local_size_y_id = 0) in;
+layout(constant_id = 1) const bool ACCUM = false;
+layout(constant_id = 2) const uint ROWS = 4;
+
+layout(std430, binding = 0) readonly buffer Wq { uvec4 wq[]; };
+layout(std430, binding = 1) readonly buffer Wd { float16_t wd[]; };
+layout(std430, binding = 2) readonly buffer X { vec4 x4[]; };
+layout(std430, binding = 3) buffer Y { float y[]; };
+
+layout(push_constant) uniform Push {
+    uint q_off;
+    uint d_off;
+    uint x_off;
+    uint y_off;
+    uint n_in;
+    uint n_out;
+} p;
+
+vec4 i8x4(uint w) {
+    return vec4(ivec4(int(w) << 24, int(w) << 16, int(w) << 8, int(w)) >> 24);
+}
+
+void main() {
+    uint first = (gl_WorkGroupID.x * gl_WorkGroupSize.y + gl_LocalInvocationID.y) * ROWS;
+    if (first >= p.n_out) {
+        return;
+    }
+    uint lane = gl_LocalInvocationID.x;
+    uint chunks = p.n_in / 16;
+    uint blocks = p.n_in / 32;
+    uint x_base = p.x_off / 4;
+
+    float acc[ROWS];
+    for (uint r = 0; r < ROWS; r++) {
+        acc[r] = 0.0;
+    }
+
+    for (uint c = lane; c < chunks; c += 64) {
+        uint xb = x_base + c * 4;
+        vec4 x0 = x4[xb];
+        vec4 x1 = x4[xb + 1];
+        vec4 x2 = x4[xb + 2];
+        vec4 x3 = x4[xb + 3];
+        for (uint r = 0; r < ROWS; r++) {
+            uint row = min(first + r, p.n_out - 1);
+            uvec4 w = wq[p.q_off + row * chunks + c];
+            float s = dot(i8x4(w.x), x0) + dot(i8x4(w.y), x1) + dot(i8x4(w.z), x2) + dot(i8x4(w.w), x3);
+            acc[r] += float(wd[p.d_off + row * blocks + c / 2]) * s;
+        }
+    }
+
+    for (uint r = 0; r < ROWS; r++) {
+        float total = subgroupAdd(acc[r]);
+        uint row = first + r;
+        if (lane == 0 && row < p.n_out) {
+            if (ACCUM) {
+                y[p.y_off + row] += total;
+            } else {
+                y[p.y_off + row] = total;
+            }
+        }
+    }
+}
