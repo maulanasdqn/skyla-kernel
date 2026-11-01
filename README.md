@@ -28,6 +28,8 @@ close that gap.
 
 ```powershell
 cargo build --release
+./target/release/skyla chat model.gguf                     # streaming chat, <think> dimmed
+./target/release/skyla chat model.gguf --temp 0 --system "Answer in Indonesian."
 ./target/release/skyla probe      # device, features, limits, memory types
 ./target/release/skyla bench-bw   # read bandwidth per memory type, GPU and CPU
 ./target/release/skyla gguf-info model.gguf

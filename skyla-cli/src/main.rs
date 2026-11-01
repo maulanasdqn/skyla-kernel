@@ -1,8 +1,10 @@
 mod bench;
+mod chat;
 mod inspect;
 mod probe;
 mod reference;
 mod run;
+mod sample;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -32,6 +34,8 @@ enum Command {
     },
     #[command(about = "Print a GGUF file's metadata and tensor summary")]
     GgufInfo { model: PathBuf },
+    #[command(about = "Tokenize text with the model's tokenizer and print the ids")]
+    Tokenize { model: PathBuf, text: String },
     #[command(about = "Greedy-decode with the CPU reference model and print the generated token ids")]
     Ref {
         model: PathBuf,
@@ -70,6 +74,24 @@ enum Command {
         #[arg(long, help = "Time every stage of the last decode step with GPU timestamps")]
         profile: bool,
     },
+    #[command(about = "Chat with the model, streaming tokens from the GPU engine")]
+    Chat {
+        model: PathBuf,
+        #[arg(long, default_value_t = 8192, help = "Context length (KV cache size)")]
+        ctx: usize,
+        #[arg(long, default_value_t = 4096, help = "Maximum tokens per reply, thinking included")]
+        max_tokens: usize,
+        #[arg(long, default_value_t = 0.6, help = "Sampling temperature; 0 is greedy")]
+        temp: f32,
+        #[arg(long, default_value_t = 40)]
+        top_k: usize,
+        #[arg(long, default_value_t = 0.95)]
+        top_p: f32,
+        #[arg(long, help = "Random seed (default: current time)")]
+        seed: Option<u64>,
+        #[arg(long, help = "System prompt")]
+        system: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -77,6 +99,7 @@ fn main() -> Result<()> {
         Command::Probe => probe::run(),
         Command::BenchBw { size_mib, reps } => bench::bandwidth(size_mib << 20, reps),
         Command::GgufInfo { model } => inspect::gguf_info(&model),
+        Command::Tokenize { model, text } => inspect::tokenize(&model, &text),
         Command::Ref {
             model,
             tokens,
@@ -91,5 +114,29 @@ fn main() -> Result<()> {
             check,
             profile,
         } => run::run(&model, &tokens, n, ctx, check, profile),
+        Command::Chat {
+            model,
+            ctx,
+            max_tokens,
+            temp,
+            top_k,
+            top_p,
+            seed,
+            system,
+        } => {
+            let seed = seed.unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(1, |d| d.as_nanos() as u64)
+            });
+            let sampler = sample::Sampler::new(temp, top_k, top_p, seed);
+            let opts = chat::Options {
+                ctx,
+                max_tokens,
+                system,
+                sampler,
+            };
+            chat::run(&model, opts)
+        }
     }
 }

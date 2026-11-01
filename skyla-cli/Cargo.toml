@@ -16,4 +16,5 @@ skyla-engine.workspace = true
 skyla-gguf.workspace = true
 skyla-ref.workspace = true
 skyla-shaders.workspace = true
+skyla-tok.workspace = true
 skyla-vk.workspace = true

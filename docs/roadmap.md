@@ -76,6 +76,7 @@ Crates:
 | `skyla-gguf` | Memory-mapped GGUF reader with F32, F16, Q8_0, Q4_K and Q6_K dequantization |
 | `skyla-ref` | Plain CPU forward pass, the correctness oracle |
 | `skyla-engine` | Packed weights, static arena, recorded decode graph, `Engine::step` |
+| `skyla-tok` | GGUF byte-level BPE tokenizer (qwen2 pre-tokenizer) |
 | `skyla-compiler` (M4) | Contracts, tactic selection, layout and memory planning |
 
 All crates sit at the repository root. Code carries no comments and no source file
@@ -97,8 +98,9 @@ exceeds 200 lines.
 - **M4 — Ahead-of-time engine.** `skyla compile` emits an engine: autotuned tactics with
   evidence, repacked weights, a static memory plan and a pre-recorded command buffer.
   Goal: beat llama.cpp decode speed on R1-0528-Qwen3-8B.
-- **M5 — Long reasoning.** Split-K decode attention, Q8 KV cache, tokenizer and the R1
-  chat template, streaming `skyla chat` with the `<think>` section shown separately.
+- **M5 — Long reasoning.** Split-K decode attention (done in M2), tokenizer and the R1
+  chat template, streaming `skyla chat` with the `<think>` section shown separately (done),
+  Q8 KV cache (open).
 - **M6 — Prefill.** Batched matrix-matrix kernels for prompt processing.
 - **M7 — MoE.** Expert routing and grouped expert matrix-vector for Qwen3-30B-A3B.
 
@@ -213,6 +215,24 @@ Vulkan backend is the oracle for the 8B model. The GPU engine matches the refere
 | **Skyla (M3)** | **6.80** |
 
 Weight matvecs run at 29–32 GB/s. RMSNorm (one workgroup, 47 µs per call) costs 2.2%.
+
+## M5 result: chat
+
+- `skyla-tok`: byte-level BPE read from GGUF (`gpt2` model, `qwen2` pre-tokenizer via
+  `fancy-regex`, control and user-defined tokens matched literally first). It produces
+  ids identical to `llama-tokenize` on 8 of 8 test strings covering emoji, CJK, code,
+  CRLF, contractions, numbers and a full chat prompt, and every case round-trips.
+- `skyla chat`: the DeepSeek-R1 template
+  (`<｜begin▁of▁sentence｜>{system}<｜User｜>{msg}<｜Assistant｜>`), temperature / top-k /
+  top-p sampling (defaults 0.6 / 40 / 0.95 as DeepSeek recommends for R1), UTF-8-safe
+  streaming, the `<think>` section dimmed on a terminal, and the KV cache kept across
+  turns. Unlike the Jinja template, earlier turns keep their thinking in context, which
+  avoids re-prefilling them at decode speed.
+- Example: asked in Indonesian for 17 × 23, the model reasons in Indonesian and answers
+  391 at 6.8 tok/s; a second turn recalls facts from the first.
+
+Prompt tokens are still fed one per step, so prefill runs at decode speed (~7 tok/s);
+batched prefill is M6.
 
 ### Finding: memory placement decides bandwidth
 

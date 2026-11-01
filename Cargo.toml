@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["skyla-cli", "skyla-engine", "skyla-gguf", "skyla-ref", "skyla-shaders", "skyla-vk"]
+members = ["skyla-cli", "skyla-engine", "skyla-gguf", "skyla-ref", "skyla-shaders", "skyla-tok", "skyla-vk"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,12 +12,14 @@ repository = "https://github.com/maulanasdqn/skyla-kernel"
 anyhow = "1"
 ash = "0.38"
 clap = { version = "4.5", features = ["derive"] }
+fancy-regex = "0.14"
 half = "2"
 memmap2 = "0.9"
 skyla-engine = { path = "skyla-engine" }
 skyla-gguf = { path = "skyla-gguf" }
 skyla-ref = { path = "skyla-ref" }
 skyla-shaders = { path = "skyla-shaders" }
+skyla-tok = { path = "skyla-tok" }
 skyla-vk = { path = "skyla-vk" }
 
 [profile.release]

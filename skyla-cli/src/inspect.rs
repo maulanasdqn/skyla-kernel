@@ -10,6 +10,18 @@ const SAMPLE_TENSORS: [&str; 4] = [
     "output.weight",
 ];
 
+pub fn tokenize(path: &Path, text: &str) -> Result<()> {
+    let g = Gguf::open(path)?;
+    let tok = skyla_tok::Tokenizer::from_gguf(&g)?;
+    let ids = tok.encode(text)?;
+    println!("{}", ids.iter().map(u32::to_string).collect::<Vec<_>>().join(","));
+    let round: Vec<u8> = ids.iter().flat_map(|&id| tok.decode(id)).collect();
+    if round != text.as_bytes() {
+        eprintln!("round trip differs: {:?}", String::from_utf8_lossy(&round));
+    }
+    Ok(())
+}
+
 pub fn gguf_info(path: &Path) -> Result<()> {
     let g = Gguf::open(path)?;
     println!("GGUF v{}, {} tensors\n", g.version, g.tensors.len());
