@@ -1,3 +1,5 @@
+use skyla_types::Settings;
+
 pub struct Sampler {
     temp: f32,
     top_k: usize,
@@ -13,6 +15,10 @@ impl Sampler {
             top_p,
             state: seed | 1,
         }
+    }
+
+    pub fn from_settings(s: &Settings, seed: u64) -> Self {
+        Self::new(s.temperature, s.top_k, s.top_p, seed)
     }
 
     fn uniform(&mut self) -> f32 {
@@ -57,4 +63,10 @@ impl Sampler {
         }
         cand[cut - 1].0
     }
+}
+
+pub fn seed_from_clock() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(1, |d| d.as_nanos() as u64)
 }

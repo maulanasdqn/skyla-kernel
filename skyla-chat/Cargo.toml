@@ -1,0 +1,14 @@
+[package]
+name = "skyla-chat"
+description = "DeepSeek-R1 chat sessions on the Skyla engine: template, sampling and streaming"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+skyla-engine.workspace = true
+skyla-gguf.workspace = true
+skyla-ref.workspace = true
+skyla-tok.workspace = true
+skyla-types.workspace = true

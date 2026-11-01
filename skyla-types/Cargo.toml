@@ -1,0 +1,9 @@
+[package]
+name = "skyla-types"
+description = "Messages shared by the Skyla server and its WebAssembly chat UI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true

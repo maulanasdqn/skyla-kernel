@@ -4,7 +4,6 @@ mod inspect;
 mod probe;
 mod reference;
 mod run;
-mod sample;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -113,6 +112,18 @@ enum Command {
         #[arg(long, help = "System prompt")]
         system: Option<String>,
     },
+    #[command(about = "Serve the browser chat UI and stream replies over WebSocket")]
+    Serve {
+        model: PathBuf,
+        #[arg(long, default_value_t = 16384, help = "Context length (KV cache size)")]
+        ctx: usize,
+        #[arg(long, value_enum, default_value_t = KvCache::V8, help = "KV cache precision")]
+        kv: KvCache,
+        #[arg(long, default_value = "127.0.0.1:8080", help = "Address to listen on")]
+        addr: std::net::SocketAddr,
+        #[arg(long, default_value = "skyla-web/dist", help = "Directory with the built web UI")]
+        web: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -147,12 +158,8 @@ fn main() -> Result<()> {
             seed,
             system,
         } => {
-            let seed = seed.unwrap_or_else(|| {
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(1, |d| d.as_nanos() as u64)
-            });
-            let sampler = sample::Sampler::new(temp, top_k, top_p, seed);
+            let seed = seed.unwrap_or_else(skyla_chat::seed_from_clock);
+            let sampler = skyla_chat::Sampler::new(temp, top_k, top_p, seed);
             let opts = chat::Options {
                 ctx,
                 kv: kv.precision(),
@@ -162,5 +169,18 @@ fn main() -> Result<()> {
             };
             chat::run(&model, opts)
         }
+        Command::Serve {
+            model,
+            ctx,
+            kv,
+            addr,
+            web,
+        } => skyla_server::serve(skyla_server::Config {
+            model,
+            context: ctx,
+            kv: kv.precision(),
+            addr,
+            web,
+        }),
     }
 }

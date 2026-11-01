@@ -4,3 +4,4 @@
 *.spv
 *.gguf
 *.safetensors
+/skyla-web/dist

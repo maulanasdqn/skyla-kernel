@@ -1,0 +1,19 @@
+[package]
+name = "skyla-server"
+description = "HTTP and WebSocket server that streams Skyla chat to the browser UI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+futures-util.workspace = true
+serde_json.workspace = true
+skyla-chat.workspace = true
+skyla-engine.workspace = true
+skyla-gguf.workspace = true
+skyla-tok.workspace = true
+skyla-types.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
