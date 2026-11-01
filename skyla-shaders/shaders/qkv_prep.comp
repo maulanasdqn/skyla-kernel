@@ -1,14 +1,20 @@
 #version 450
 #extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
 #extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_8bit_storage : require
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
 
 layout(local_size_x = 64) in;
+layout(constant_id = 0) const bool K_Q8 = false;
+layout(constant_id = 1) const bool V_Q8 = false;
 
 layout(std430, binding = 0) readonly buffer W { float w[]; };
 layout(std430, binding = 1) buffer A { float a[]; };
 layout(std430, binding = 2) readonly buffer C { uint ctl[]; };
 layout(std430, binding = 3) buffer KV { float16_t kv[]; };
+layout(std430, binding = 4) buffer KV8 { int8_t kv8[]; };
 
 layout(push_constant) uniform Push {
     uint q_off;
@@ -25,7 +31,37 @@ layout(push_constant) uniform Push {
     float mscale;
     uint q_stride;
     uint kv_stride;
+    uint ks_off;
+    uint vs_off;
 } p;
+
+float block_max(float v) {
+    v = abs(v);
+    for (uint d = 1; d < 32; d *= 2) {
+        v = max(v, subgroupShuffleXor(v, d));
+    }
+    return v;
+}
+
+void store(bool q8, uint cache, uint scales, uint pos, uint head, float y0, float y1) {
+    uint t = gl_LocalInvocationID.x;
+    uint kv_dim = p.n_kv * 128;
+    uint dst = cache + pos * kv_dim + head * 128;
+    if (!q8) {
+        kv[dst + t] = float16_t(y0);
+        kv[dst + t + 64] = float16_t(y1);
+        return;
+    }
+    float s0 = block_max(y0) / 127.0;
+    float s1 = block_max(y1) / 127.0;
+    kv8[dst + t] = int8_t(s0 > 0.0 ? round(y0 / s0) : 0.0);
+    kv8[dst + t + 64] = int8_t(s1 > 0.0 ? round(y1 / s1) : 0.0);
+    if (t % 32 == 0) {
+        uint sdst = scales + pos * (kv_dim / 32) + head * 4 + t / 32;
+        kv[sdst] = float16_t(s0);
+        kv[sdst + 2] = float16_t(s1);
+    }
+}
 
 void main() {
     uint h = gl_WorkGroupID.x;
@@ -35,16 +71,15 @@ void main() {
     }
     uint t = gl_LocalInvocationID.x;
     uint pos = ctl[1] + tok;
-    uint kv_dim = p.n_kv * 128;
     uint q_base = p.q_off + tok * p.q_stride;
     uint k_base = p.k_off + tok * p.kv_stride;
     uint v_base = p.v_off + tok * p.kv_stride;
 
     if (h >= p.n_head + p.n_kv) {
         uint vh = h - p.n_head - p.n_kv;
-        uint dst = p.vc_off + pos * kv_dim + vh * 128;
-        kv[dst + t] = float16_t(a[v_base + vh * 128 + t]);
-        kv[dst + t + 64] = float16_t(a[v_base + vh * 128 + t + 64]);
+        float v0 = a[v_base + vh * 128 + t];
+        float v1 = a[v_base + vh * 128 + t + 64];
+        store(V_Q8, p.vc_off, p.vs_off, pos, vh, v0, v1);
         return;
     }
 
@@ -69,8 +104,6 @@ void main() {
         a[src + t] = y0;
         a[src + t + 64] = y1;
     } else {
-        uint dst = p.kc_off + pos * kv_dim + head * 128;
-        kv[dst + t] = float16_t(y0);
-        kv[dst + t + 64] = float16_t(y1);
+        store(K_Q8, p.kc_off, p.ks_off, pos, head, y0, y1);
     }
 }

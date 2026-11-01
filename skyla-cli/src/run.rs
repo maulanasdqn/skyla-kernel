@@ -5,10 +5,17 @@ use skyla_ref::{argmax, softmax, Model};
 use std::path::Path;
 use std::time::Instant;
 
-pub fn run(path: &Path, prompt: &[u32], n: usize, max_ctx: usize, check: bool, profile: bool) -> Result<()> {
+pub fn run(
+    path: &Path,
+    prompt: &[u32],
+    n: usize,
+    kv: (usize, skyla_engine::KvPrecision),
+    check: bool,
+    profile: bool,
+) -> Result<()> {
     let g = Gguf::open(path)?;
     let t = Instant::now();
-    let mut engine = Engine::new(&g, max_ctx, profile)?;
+    let mut engine = Engine::new(&g, kv.0, kv.1, profile)?;
     println!(
         "{} | {} MiB of packed weights in {} buffers | loaded in {:.2?}",
         engine.device_name(),

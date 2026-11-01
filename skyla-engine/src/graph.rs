@@ -64,6 +64,8 @@ impl Graph<'_> {
             c.rope_mscale.to_bits(),
             a.s_q,
             a.s_kv,
+            a.k_scales(l),
+            a.v_scales(l),
         ];
         self.r.dispatch(&self.k.qkv, [heads, b, 1], &push);
         self.stage("qk norm + rope");
@@ -78,6 +80,8 @@ impl Graph<'_> {
             scale.to_bits(),
             a.s_q,
             a.s_part,
+            a.k_scales(l),
+            a.v_scales(l),
         ];
         self.r
             .dispatch(&self.k.attention, [c.n_head_kv as u32, a.n_split, b], &push);

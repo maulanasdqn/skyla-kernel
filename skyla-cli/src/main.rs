@@ -7,8 +7,25 @@ mod run;
 mod sample;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum KvCache {
+    Q8,
+    F16,
+    V8,
+}
+
+impl KvCache {
+    fn precision(self) -> skyla_engine::KvPrecision {
+        match self {
+            Self::Q8 => skyla_engine::KvPrecision::Q8,
+            Self::F16 => skyla_engine::KvPrecision::F16,
+            Self::V8 => skyla_engine::KvPrecision::F16KeysQ8Values,
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "skyla", version, about = "Ahead-of-time LLM kernels for one AMD Vega iGPU")]
@@ -69,6 +86,8 @@ enum Command {
         n: usize,
         #[arg(long, default_value_t = 2048, help = "Maximum context length (KV cache size)")]
         ctx: usize,
+        #[arg(long, value_enum, default_value_t = KvCache::V8, help = "KV cache precision (v8: f16 keys, q8 values)")]
+        kv: KvCache,
         #[arg(long, help = "Run the CPU reference in lockstep and compare logits every step")]
         check: bool,
         #[arg(long, help = "Time every stage of the last decode step with GPU timestamps")]
@@ -77,8 +96,10 @@ enum Command {
     #[command(about = "Chat with the model, streaming tokens from the GPU engine")]
     Chat {
         model: PathBuf,
-        #[arg(long, default_value_t = 8192, help = "Context length (KV cache size)")]
+        #[arg(long, default_value_t = 16384, help = "Context length (KV cache size)")]
         ctx: usize,
+        #[arg(long, value_enum, default_value_t = KvCache::V8, help = "KV cache precision (v8: f16 keys, q8 values)")]
+        kv: KvCache,
         #[arg(long, default_value_t = 4096, help = "Maximum tokens per reply, thinking included")]
         max_tokens: usize,
         #[arg(long, default_value_t = 0.6, help = "Sampling temperature; 0 is greedy")]
@@ -111,12 +132,14 @@ fn main() -> Result<()> {
             tokens,
             n,
             ctx,
+            kv,
             check,
             profile,
-        } => run::run(&model, &tokens, n, ctx, check, profile),
+        } => run::run(&model, &tokens, n, (ctx, kv.precision()), check, profile),
         Command::Chat {
             model,
             ctx,
+            kv,
             max_tokens,
             temp,
             top_k,
@@ -132,6 +155,7 @@ fn main() -> Result<()> {
             let sampler = sample::Sampler::new(temp, top_k, top_p, seed);
             let opts = chat::Options {
                 ctx,
+                kv: kv.precision(),
                 max_tokens,
                 system,
                 sampler,

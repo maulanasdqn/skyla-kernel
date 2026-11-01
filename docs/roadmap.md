@@ -99,8 +99,8 @@ exceeds 200 lines.
   RMSNorm; fusion and device-local staging measured and rejected (done). Still open: a
   `skyla compile` step that runs the sweeps on the target and stores the evidence.
 - **M5 — Long reasoning.** Split-K decode attention (done in M2), tokenizer and the R1
-  chat template, streaming `skyla chat` with the `<think>` section shown separately (done),
-  Q8 KV cache (open).
+  chat template, streaming `skyla chat` with the `<think>` section shown separately, 8-bit
+  KV cache with per-tensor precision choice and a 16k default context (done).
 - **M6 — Prefill.** Batched matrix-matrix kernels for prompt processing (done).
 - **M7 — MoE.** Expert routing and grouped expert matrix-vector for Qwen3-30B-A3B.
 
@@ -286,6 +286,33 @@ setting on Qwen3-0.6B was 2 rows, so the tactic is chosen per weight format.
 
 After M4 the weight matvecs read at 36–38 GB/s against a ~40 GB/s roofline measured in
 the same session; norms, RoPE, attention and SiLU together cost ~3% of a decode step.
+
+## M5 result: 8-bit KV cache
+
+Keys and values can each be stored as f16 or as int8 with one f16 scale per 32 elements
+(Q8_0-style, 1088 bytes per head per position instead of 2048). The QK-norm/RoPE kernel
+quantizes in registers; attention dequantizes on load. `--kv` picks the precision:
+
+| `--kv` | Keys | Values | R1-8B worst logit error* | Decode at 4k context | KV for 16k context |
+|---|---|---|---:|---:|---:|
+| `f16` | f16 | f16 | 0.15 | 6.57 tok/s | 2304 MiB (over the 2 GiB cap) |
+| **`v8` (default)** | f16 | int8 | **0.19** | 6.72 tok/s | **1.84 GiB** |
+| `q8` | int8 | int8 | 2.01 | 6.88 tok/s | 1.28 GiB |
+
+\* Against the f32 CPU reference over 70 prompt tokens and 16 decode steps; every
+greedy token matched for all three. Attention at 4k context took 20.6 / 16.1 / 13.4 ms
+per step. Qwen3 keys carry large per-dimension outliers after QK-norm (values near
+200), so one outlier forces a coarse step on the rest of its 32-element block; values
+have no such outliers, which is why `v8` is the default and `skyla chat` now opens a
+16k context.
+
+Driver finding: `subgroupClusteredMax(x, 32)` on this AMD driver (23.19) returns wrong
+results for the upper half of a 64-lane wave, which zeroed outlier keys. The block
+maximum is now an explicit `subgroupShuffleXor` butterfly over offsets 1–16.
+
+Prefill slows with context (39.7 tok/s at 4k vs 60 at short prompts) because each of
+the 32 batched queries reads the whole KV cache separately; sharing KV reads across
+the batch is the next prefill improvement.
 
 ### Finding: memory placement decides bandwidth
 

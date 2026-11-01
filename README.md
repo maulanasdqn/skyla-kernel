@@ -10,7 +10,8 @@ it at a consumer laptop instead of a datacenter GPU. ROCm does not support this 
 Skyla's kernels are Vulkan compute shaders, specialized at pipeline-creation time and
 tuned by measurement on the target device.
 
-> Status: **M0–M6 done** (M5's Q8 KV cache open). DeepSeek-R1-0528-Qwen3-8B (Q4_K_M)
+> Status: **M0–M6 done.** DeepSeek-R1-0528-Qwen3-8B (Q4_K_M), 16k context with an 8-bit
+> value cache,
 > on the iGPU, checked token by token against a CPU reference:
 >
 > | | Skyla | llama.cpp b12032 (Vulkan) |
@@ -36,6 +37,7 @@ close that gap.
 cargo build --release
 ./target/release/skyla chat model.gguf                     # streaming chat, <think> dimmed
 ./target/release/skyla chat model.gguf --temp 0 --system "Answer in Indonesian."
+./target/release/skyla chat model.gguf --kv q8 --ctx 16384      # kv: f16 | v8 (default) | q8
 ./target/release/skyla probe      # device, features, limits, memory types
 ./target/release/skyla bench-bw   # read bandwidth per memory type, GPU and CPU
 ./target/release/skyla gguf-info model.gguf

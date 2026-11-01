@@ -1,15 +1,21 @@
 #version 450
 #extension GL_KHR_shader_subgroup_arithmetic : require
 #extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_8bit_storage : require
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
 
 layout(local_size_x = 64) in;
 layout(constant_id = 0) const uint N_REP = 2;
 layout(constant_id = 1) const uint CHUNK = 64;
+layout(constant_id = 2) const bool K_Q8 = false;
+layout(constant_id = 3) const bool V_Q8 = false;
 
 layout(std430, binding = 0) buffer A { float a[]; };
 layout(std430, binding = 1) readonly buffer C { uint ctl[]; };
 layout(std430, binding = 2) readonly buffer KV { f16vec2 kv[]; };
+layout(std430, binding = 3) readonly buffer KV8 { int8_t kv8[]; };
+layout(std430, binding = 4) readonly buffer KVS { float16_t kvs[]; };
 
 layout(push_constant) uniform Push {
     uint q_off;
@@ -21,7 +27,19 @@ layout(push_constant) uniform Push {
     float scale;
     uint q_stride;
     uint part_stride;
+    uint ks_off;
+    uint vs_off;
 } p;
+
+vec2 load(bool q8, uint cache, uint scales, uint i, uint kvh, uint lane) {
+    uint row = p.n_kv * 64;
+    if (!q8) {
+        return vec2(kv[cache / 2 + i * row + kvh * 64 + lane]);
+    }
+    float s = float(kvs[scales + i * (p.n_kv * 4) + kvh * 4 + lane / 16]);
+    uint b = cache + (i * row + kvh * 64 + lane) * 2;
+    return vec2(float(kv8[b]), float(kv8[b + 1])) * s;
+}
 
 void main() {
     uint kvh = gl_WorkGroupID.x;
@@ -32,9 +50,6 @@ void main() {
         return;
     }
     uint lane = gl_LocalInvocationID.x;
-    uint row = p.n_kv * 64;
-    uint k_base = p.kc_off / 2 + kvh * 64 + lane;
-    uint v_base = p.vc_off / 2 + kvh * 64 + lane;
     uint q_base = p.q_off + tok * p.q_stride;
     uint part_base = p.part_off + tok * p.part_stride;
 
@@ -52,8 +67,8 @@ void main() {
 
     uint end = min(split * CHUNK + CHUNK, n_pos);
     for (uint i = split * CHUNK; i < end; i++) {
-        vec2 k = vec2(kv[k_base + i * row]);
-        vec2 v = vec2(kv[v_base + i * row]);
+        vec2 k = load(K_Q8, p.kc_off, p.ks_off, i, kvh, lane);
+        vec2 v = load(V_Q8, p.vc_off, p.vs_off, i, kvh, lane);
         for (uint j = 0; j < N_REP; j++) {
             float s = subgroupAdd(dot(q[j], k));
             float mn = max(m[j], s);

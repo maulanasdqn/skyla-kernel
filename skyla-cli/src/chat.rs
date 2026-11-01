@@ -12,6 +12,7 @@ const RESET: &str = "\x1b[0m";
 
 pub struct Options {
     pub ctx: usize,
+    pub kv: skyla_engine::KvPrecision,
     pub max_tokens: usize,
     pub system: Option<String>,
     pub sampler: Sampler,
@@ -40,7 +41,7 @@ impl Stream {
 pub fn run(path: &Path, mut opts: Options) -> Result<()> {
     let g = Gguf::open(path)?;
     let tok = Tokenizer::from_gguf(&g)?;
-    let mut engine = Engine::new(&g, opts.ctx, false)?;
+    let mut engine = Engine::new(&g, opts.ctx, opts.kv, false)?;
     let think = (tok.id("<think>"), tok.id("</think>"));
     let bos = String::from_utf8_lossy(&tok.decode(tok.bos)).into_owned();
     println!(

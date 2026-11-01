@@ -1,4 +1,5 @@
 use crate::arena::ATTENTION_CHUNK;
+use crate::kv::KvPrecision;
 use anyhow::Result;
 use skyla_gguf::DType;
 use skyla_vk::{Buffer, Context, Pipeline};
@@ -66,7 +67,15 @@ fn matvec(ctx: &Context, kind: Kind, weights: &[Buffer], a: &Buffer) -> Result<M
 }
 
 impl Kernels {
-    pub fn new(ctx: &Context, weights: &[Buffer], a: &Buffer, kv: &Buffer, n_rep: u32) -> Result<Self> {
+    pub fn new(
+        ctx: &Context,
+        weights: &[Buffer],
+        a: &Buffer,
+        kv: &Buffer,
+        n_rep: u32,
+        precision: KvPrecision,
+    ) -> Result<Self> {
+        let (k8, v8) = (precision.keys_q8() as u32, precision.values_q8() as u32);
         let build = |spirv: &[u8], bufs: &[&Buffer], push: u32, spec: &[u32]| -> Result<Pipeline> {
             let p = ctx.create_pipeline(spirv, bufs.len() as u32, push, spec)?;
             p.bind_buffers(bufs);
@@ -94,8 +103,8 @@ impl Kernels {
                 matvec(ctx, kind(s::MATMUL, true, 40, Some(2), mm), weights, a)?,
             ],
             rmsnorm: build(s::RMSNORM, &[w0, a, a], 24, &[])?,
-            qkv: build(s::QKV_PREP, &[w0, a, a, kv], 56, &[])?,
-            attention: build(s::ATTENTION, &[a, a, kv], 36, &[n_rep, ATTENTION_CHUNK])?,
+            qkv: build(s::QKV_PREP, &[w0, a, a, kv, kv], 64, &[k8, v8])?,
+            attention: build(s::ATTENTION, &[a, a, kv, kv, kv], 44, &[n_rep, ATTENTION_CHUNK, k8, v8])?,
             merge: build(s::ATTENTION_MERGE, &[a, a], 24, &[])?,
             silu: build(s::SILU_MUL, &[a, a], 16, &[])?,
             take_last: build(s::TAKE_LAST, &[a, a], 16, &[])?,

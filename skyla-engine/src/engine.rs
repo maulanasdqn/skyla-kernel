@@ -1,6 +1,7 @@
 use crate::arena::{Arena, BATCH};
 use crate::graph;
 use crate::kernels::Kernels;
+use crate::kv::KvPrecision;
 use crate::weights::Weights;
 use anyhow::{anyhow, ensure, Result};
 use skyla_gguf::{dequantize, DType, Gguf};
@@ -20,7 +21,7 @@ pub struct Engine<'g> {
 }
 
 impl<'g> Engine<'g> {
-    pub fn new(g: &'g Gguf, max_ctx: usize, profile: bool) -> Result<Self> {
+    pub fn new(g: &'g Gguf, max_ctx: usize, kv: KvPrecision, profile: bool) -> Result<Self> {
         let config = Config::from_gguf(g)?;
         ensure!(
             config.head_dim == 128,
@@ -36,9 +37,9 @@ impl<'g> Engine<'g> {
 
         let ctx = Context::new()?;
         let weights = Weights::load(&ctx, g, &config)?;
-        let arena = Arena::new(&ctx, &config, max_ctx)?;
+        let arena = Arena::new(&ctx, &config, max_ctx, kv)?;
         let n_rep = (config.n_head / config.n_head_kv) as u32;
-        let kernels = Kernels::new(&ctx, &weights.buffers, &arena.buffer, &arena.kv, n_rep)?;
+        let kernels = Kernels::new(&ctx, &weights.buffers, &arena.buffer, &arena.kv, n_rep, kv)?;
         let decode = graph::record(&ctx, &kernels, &weights, &arena, &config, false, profile)?;
         let prefill = graph::record(&ctx, &kernels, &weights, &arena, &config, true, profile)?;
         Ok(Self {

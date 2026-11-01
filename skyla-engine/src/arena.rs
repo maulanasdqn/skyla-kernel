@@ -1,4 +1,5 @@
 use crate::host_memory;
+use crate::kv::{KvLayout, KvPrecision};
 use anyhow::{ensure, Result};
 use skyla_ref::Config;
 use skyla_vk::{Buffer, BufferUsageFlags, Context};
@@ -27,7 +28,7 @@ pub struct Arena {
     pub s_part: u32,
     pub n_split: u32,
     pub max_ctx: u32,
-    kv_dim: u32,
+    pub kv_layout: KvLayout,
 }
 
 struct Layout {
@@ -50,7 +51,7 @@ impl Layout {
 }
 
 impl Arena {
-    pub fn new(ctx: &Context, c: &Config, max_ctx: usize) -> Result<Self> {
+    pub fn new(ctx: &Context, c: &Config, max_ctx: usize, precision: KvPrecision) -> Result<Self> {
         let n_split = (max_ctx as u32).div_ceil(ATTENTION_CHUNK);
         let mut l = Layout { size: 64 };
         let (x, s_embd) = l.batched(c.n_embd);
@@ -68,8 +69,8 @@ impl Arena {
         let memory = host_memory(ctx)?;
         let usage = BufferUsageFlags::STORAGE_BUFFER;
         let buffer = ctx.alloc_buffer(l.size as u64 * 4, usage, memory)?;
-        let kv_dim = c.n_head_kv * c.head_dim;
-        let kv_bytes = (c.n_layer * 2 * max_ctx * kv_dim * 2) as u64;
+        let kv_layout = KvLayout::new(precision, c.n_layer, max_ctx, c.n_head_kv * c.head_dim);
+        let kv_bytes = kv_layout.bytes();
         ensure!(
             kv_bytes <= ctx.max_allocation_size,
             "KV cache for {max_ctx} tokens needs {} MiB, above the allocation cap",
@@ -97,15 +98,23 @@ impl Arena {
             s_part,
             n_split,
             max_ctx: max_ctx as u32,
-            kv_dim: kv_dim as u32,
+            kv_layout,
         })
     }
 
     pub fn k_cache(&self, layer: usize) -> u32 {
-        layer as u32 * 2 * self.max_ctx * self.kv_dim
+        self.kv_layout.keys(layer)
     }
 
     pub fn v_cache(&self, layer: usize) -> u32 {
-        self.k_cache(layer) + self.max_ctx * self.kv_dim
+        self.kv_layout.values(layer)
+    }
+
+    pub fn k_scales(&self, layer: usize) -> u32 {
+        self.kv_layout.key_scales(layer)
+    }
+
+    pub fn v_scales(&self, layer: usize) -> u32 {
+        self.kv_layout.value_scales(layer)
     }
 }
