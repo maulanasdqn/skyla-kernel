@@ -1,6 +1,4 @@
-//! Roofline probes. Decode speed of a weight-streaming LLM is bounded by
-//! `bytes_per_token / read_bandwidth`, so these numbers are the ceiling every kernel is judged against.
-
+use crate::probe::flags_str;
 use anyhow::Result;
 use skyla_vk::{BufferUsageFlags, Context, MemoryPropertyFlags};
 use std::hint::black_box;
@@ -31,15 +29,15 @@ fn gpu(ctx: &Context, size: u64, reps: u32) -> Result<()> {
                 .map(|p| (wg, p))
         })
         .collect::<Result<Vec<_>>>()?;
-
-    let max_threads = (WG_SIZES.iter().max().unwrap() * GROUP_COUNTS.iter().max().unwrap()) as u64;
+    let max_threads = (WG_SIZES[2] * GROUP_COUNTS[4]) as u64;
     let dst_type = ctx
-        .find_memory_type(
-            MemoryPropertyFlags::HOST_VISIBLE,
-            MemoryPropertyFlags::empty(),
-        )
+        .find_memory_type(MemoryPropertyFlags::HOST_VISIBLE, MemoryPropertyFlags::empty())
         .expect("host-visible memory");
     let dst = ctx.alloc_buffer(max_threads * 4, BufferUsageFlags::STORAGE_BUFFER, dst_type)?;
+    let unusable = MemoryPropertyFlags::LAZILY_ALLOCATED
+        | MemoryPropertyFlags::PROTECTED
+        | MemoryPropertyFlags::DEVICE_COHERENT_AMD
+        | MemoryPropertyFlags::DEVICE_UNCACHED_AMD;
 
     println!("GPU streaming read, {} MiB per pass", size >> 20);
     println!(
@@ -48,11 +46,6 @@ fn gpu(ctx: &Context, size: u64, reps: u32) -> Result<()> {
     );
     for (ti, t) in ctx.memory_types().iter().enumerate() {
         let flags = t.property_flags;
-        // AMD device-coherent types need the deviceCoherentMemory feature; they are also slower by design.
-        let unusable = MemoryPropertyFlags::LAZILY_ALLOCATED
-            | MemoryPropertyFlags::PROTECTED
-            | MemoryPropertyFlags::DEVICE_COHERENT_AMD
-            | MemoryPropertyFlags::DEVICE_UNCACHED_AMD;
         if flags.is_empty() || flags.intersects(unusable) {
             continue;
         }
@@ -61,34 +54,31 @@ fn gpu(ctx: &Context, size: u64, reps: u32) -> Result<()> {
         let src = match ctx.alloc_buffer(bytes, BufferUsageFlags::STORAGE_BUFFER, ti as u32) {
             Ok(b) => b,
             Err(e) => {
-                println!("  {ti:<4} {:<38} skipped: {e}", crate::flags_str(flags));
+                println!("  {ti:<4} {:<38} skipped: {e}", flags_str(flags));
                 continue;
             }
         };
 
-        let n_vec4 = (bytes / 16) as u32;
+        let push = ((bytes / 16) as u32).to_le_bytes();
         let mut best = (0.0f64, 0u32, 0u32);
         for (wg, pipe) in &pipelines {
             pipe.bind_buffers(&[&src, &dst]);
             for &groups in &GROUP_COUNTS {
-                // One untimed warm-up pass, then the median of `reps` timed passes.
-                ctx.time_dispatch(pipe, [groups, 1, 1], &n_vec4.to_le_bytes(), 1)?;
-                let ns =
-                    median(ctx.time_dispatch(pipe, [groups, 1, 1], &n_vec4.to_le_bytes(), reps)?);
+                ctx.time_dispatch(pipe, [groups, 1, 1], &push, 1)?;
+                let ns = median(ctx.time_dispatch(pipe, [groups, 1, 1], &push, reps)?);
                 let gbs = bytes as f64 / ns;
                 if gbs > best.0 {
                     best = (gbs, *wg, groups);
                 }
             }
         }
-        let note = if bytes < size {
-            format!("  ({} MiB, heap-limited)", bytes >> 20)
-        } else {
-            String::new()
+        let note = match bytes < size {
+            true => format!("  ({} MiB, heap-limited)", bytes >> 20),
+            false => String::new(),
         };
         println!(
             "  {ti:<4} {:<38} {:>9.2}  {:>6} {:>7}{note}",
-            crate::flags_str(flags),
+            flags_str(flags),
             best.0,
             best.1,
             best.2
@@ -125,10 +115,7 @@ fn cpu(size: u64, reps: u32) {
                 t.elapsed().as_nanos() as f64
             })
             .collect();
-        println!(
-            "  {threads:>2} threads  {:>7.2} GB/s",
-            size as f64 / median(times)
-        );
+        println!("  {threads:>2} threads  {:>7.2} GB/s", size as f64 / median(times));
         threads *= 2;
     }
 }

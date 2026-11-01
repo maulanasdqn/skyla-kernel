@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+members = ["skyla-cli", "skyla-gguf", "skyla-ref", "skyla-shaders", "skyla-vk"]
 
 [workspace.package]
 version = "0.1.0"
@@ -14,9 +14,10 @@ ash = "0.38"
 clap = { version = "4.5", features = ["derive"] }
 half = "2"
 memmap2 = "0.9"
-skyla-gguf = { path = "crates/skyla-gguf" }
-skyla-shaders = { path = "crates/skyla-shaders" }
-skyla-vk = { path = "crates/skyla-vk" }
+skyla-gguf = { path = "skyla-gguf" }
+skyla-ref = { path = "skyla-ref" }
+skyla-shaders = { path = "skyla-shaders" }
+skyla-vk = { path = "skyla-vk" }
 
 [profile.release]
 debug = 1

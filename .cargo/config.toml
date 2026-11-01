@@ -1,3 +1,2 @@
-# Skyla targets one exact machine, so compile host code for its CPU (Zen 3: AVX2, FMA).
 [build]
 rustflags = ["-C", "target-cpu=native"]

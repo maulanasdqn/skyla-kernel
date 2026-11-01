@@ -1,0 +1,10 @@
+[package]
+name = "skyla-ref"
+description = "Plain CPU forward pass for qwen3 models: the correctness oracle for Skyla kernels"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+skyla-gguf.workspace = true

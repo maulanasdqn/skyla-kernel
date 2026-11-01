@@ -14,8 +14,31 @@ consumer machine instead of a datacenter GPU.
 | API | Vulkan 1.3, AMD proprietary driver (ROCm does not support this GPU) |
 | Memory | 40 GiB DDR4-3200 shared by CPU and GPU (8 + 32 GiB, partially dual-channel) |
 | Device features | FP16 arithmetic, 8/16-bit storage. No accelerated int8 dot product, no matrix cores |
-| First model | Qwen3-0.6B, Q8_0, batch 1 |
+| **Target model** | DeepSeek-R1-0528-Qwen3-8B, abliterated (Josiefied v1), Q4_K_M, batch 1 |
+| Development model | Qwen3-0.6B, Q8_0: same `qwen3` architecture, 13× smaller, for fast correctness loops |
 | Stretch model | Qwen3-30B-A3B (MoE), Q4 |
+
+### Target model shape
+
+DeepSeek-R1-0528-Qwen3-8B is a Qwen3-8B fine-tune, so every kernel validated on
+Qwen3-0.6B carries over with different constants:
+
+| | Qwen3-0.6B | R1-0528-Qwen3-8B |
+|---|---:|---:|
+| Layers | 28 | 36 |
+| Hidden size | 1024 | 4096 |
+| Query / KV heads | 16 / 8 | 32 / 8 |
+| Head dim | 128 | 128 |
+| FFN size | 3072 | 12288 |
+| Vocabulary | 151 936 | 151 936 |
+| Weights per token | 633 MB (Q8_0) | ~4.7 GB (Q4_K_M: Q4_K + Q6_K blocks) |
+| Decode ceiling at 35 GB/s | ~55 tok/s | **~7.4 tok/s** |
+
+R1 is a reasoning model and routinely writes thousands of tokens before answering, so
+long-context decode matters. An FP16 KV cache costs 144 KiB per token (36 layers × 2 ×
+8 heads × 128 × 2 bytes): at 8k tokens every decode step reads 1.2 GB of cache on top of
+the weights, about 25% more traffic. Attention must therefore be a split-K
+("flash-decoding") kernel, and a Q8 KV cache is a planned tactic.
 
 Consequences for kernel design:
 
@@ -49,26 +72,33 @@ Crates:
 | `skyla-vk` | Minimal Vulkan layer: device, buffers, specialized pipelines, timestamps |
 | `skyla-shaders` | GLSL kernels compiled to SPIR-V at build time |
 | `skyla-cli` | `skyla` binary: probe, benchmarks, compile, run |
-| `skyla-gguf` (M1) | Memory-mapped GGUF reader |
-| `skyla-ref` (M1) | Plain CPU forward pass, the correctness oracle |
-| `skyla-compiler` (M3) | Contracts, tactic selection, layout and memory planning |
+| `skyla-gguf` | Memory-mapped GGUF reader with F32, F16, Q8_0, Q4_K and Q6_K dequantization |
+| `skyla-ref` | Plain CPU forward pass, the correctness oracle |
+| `skyla-compiler` (M4) | Contracts, tactic selection, layout and memory planning |
+
+All crates sit at the repository root. Code carries no comments and no source file
+exceeds 200 lines.
 
 ## Milestones
 
 - **M0 — Roofline.** Device probe, GPU read bandwidth per memory type, CPU bandwidth.
   Baseline: llama.cpp b12032 Vulkan on the same model.
-- **M1 — Reference.** GGUF loader and a CPU reference forward pass for Qwen3-0.6B whose
-  greedy output matches llama.cpp token for token.
+- **M1 — Reference.** GGUF loader and a CPU reference forward pass for Qwen3-0.6B.
+  Acceptance: teacher-forced on llama.cpp's greedy output, our top-1 matches at every step
+  except near-ties (top-2 margin under 2 points), since llama.cpp's CPU path quantizes
+  activations to 8 bits and Skyla's reference stays in f32.
 - **M2 — GPU decode.** Kernels for Q8_0 matrix-vector, RMSNorm, RoPE, QK-norm, decode
   attention, SwiGLU and residual add. Full decode on the iGPU, checked layer by layer
   against `skyla-ref`.
-- **M3 — Ahead-of-time engine.** `skyla compile` emits an engine: autotuned tactics with
+- **M3 — K-quants.** Q4_K and Q6_K matrix-vector kernels, checked against the CPU
+  reference. Load R1-0528-Qwen3-8B, splitting weights across buffers (2 GiB allocation cap).
+- **M4 — Ahead-of-time engine.** `skyla compile` emits an engine: autotuned tactics with
   evidence, repacked weights, a static memory plan and a pre-recorded command buffer.
-  Goal: beat llama.cpp decode speed on Qwen3-0.6B.
-- **M4 — Prefill.** Batched matrix-matrix kernels for prompt processing.
-- **M5 — Q4 weights.** Q4_0 / Q4_K dequantizing kernels.
-- **M6 — MoE.** Expert routing and grouped expert matrix-vector for Qwen3-30B-A3B,
-  with weights placed by measured bandwidth across memory types.
+  Goal: beat llama.cpp decode speed on R1-0528-Qwen3-8B.
+- **M5 — Long reasoning.** Split-K decode attention, Q8 KV cache, tokenizer and the R1
+  chat template, streaming `skyla chat` with the `<think>` section shown separately.
+- **M6 — Prefill.** Batched matrix-matrix kernels for prompt processing.
+- **M7 — MoE.** Expert routing and grouped expert matrix-vector for Qwen3-30B-A3B.
 
 ## Baseline (llama.cpp b12032, Qwen3-0.6B Q8_0)
 
@@ -100,4 +130,14 @@ Findings:
   Single allocations are capped at 2 GiB, so larger models are split across buffers.
 - The GPU reads about 13% faster than the CPU, so the iGPU is the right decode device.
 - llama.cpp decode runs at ~77% of the GPU roofline. The ceiling for Qwen3-0.6B Q8_0
-  (633 MB of weights per token) is about 55 tok/s; the M3 target is above 50 tok/s.
+  (633 MB of weights per token) is about 55 tok/s.
+
+## M1 result: reference agrees with llama.cpp
+
+Prompt "The capital of France is" (ids `785,6722,315,9625,374`), 24 tokens of llama.cpp
+b12032 CPU greedy output teacher-forced through `skyla ref --expect`:
+
+- First-step probability of " Paris": 0.6490 (Skyla) vs 0.6517 (llama.cpp).
+- 23 of 24 steps agree on top-1. The one disagreement is a near-tie: Skyla gives
+  "France" 0.1799 and "Italy" 0.1680, llama.cpp picks "Italy".
+- The f32 reference decodes at 3.4 tok/s on the CPU; it is an oracle, not an engine.

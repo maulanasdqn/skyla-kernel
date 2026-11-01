@@ -1,6 +1,3 @@
-//! Compiles every `shaders/*.comp` to SPIR-V with glslc and exposes each as
-//! `pub const <NAME>: &[u8]` (file stem, upper-cased).
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{env, fs};
@@ -44,12 +41,7 @@ fn main() {
             .arg("-o")
             .arg(&spv)
             .status()
-            .unwrap_or_else(|e| {
-                panic!(
-                    "running {}: {e} (install the Vulkan SDK or set GLSLC)",
-                    glslc.display()
-                )
-            });
+            .unwrap_or_else(|e| panic!("running {}: {e} (install the Vulkan SDK or set GLSLC)", glslc.display()));
         assert!(status.success(), "glslc failed on {}", src.display());
         consts.push_str(&format!(
             "pub const {}: &[u8] = include_bytes!({:?});\n",

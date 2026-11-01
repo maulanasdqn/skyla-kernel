@@ -203,6 +203,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "skyla-gguf",
+ "skyla-ref",
  "skyla-shaders",
  "skyla-vk",
 ]
@@ -214,6 +216,14 @@ dependencies = [
  "anyhow",
  "half",
  "memmap2",
+]
+
+[[package]]
+name = "skyla-ref"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "skyla-gguf",
 ]
 
 [[package]]

@@ -1,6 +1,4 @@
 #version 450
-// Streaming-read roofline probe: every invocation reads a grid-strided slice of `src`.
-// The conditional store keeps the loads alive without adding write traffic.
 
 layout(local_size_x_id = 0) in;
 

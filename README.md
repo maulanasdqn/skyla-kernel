@@ -2,13 +2,15 @@
 
 **Ahead-of-time LLM inference kernels for one exact machine: an AMD Vega 8 iGPU.**
 
+Target: DeepSeek-R1-0528-Qwen3-8B (abliterated, Q4_K_M) on a Ryzen 7 7730U laptop.
+
 Skyla takes the idea behind [Netra Kernel](https://github.com/NetraRuntime/netra-kernel)
 (compile for the exact serving contract and launch only specialized kernels) and points
 it at a consumer laptop instead of a datacenter GPU. ROCm does not support this GPU, so
 Skyla's kernels are Vulkan compute shaders, specialized at pipeline-creation time and
 tuned by measurement on the target device.
 
-> Status: **M0 done (roofline)**, M1 in progress. Nothing runs a model yet.
+> Status: **M0 (roofline) and M1 (CPU reference) done**, M2 (GPU decode) next.
 > See [docs/roadmap.md](docs/roadmap.md).
 
 Measured on the target: the iGPU streams weights at about 35 GB/s, the CPU at about
@@ -27,6 +29,8 @@ close that gap.
 cargo build --release
 ./target/release/skyla probe      # device, features, limits, memory types
 ./target/release/skyla bench-bw   # read bandwidth per memory type, GPU and CPU
+./target/release/skyla gguf-info model.gguf
+./target/release/skyla ref model.gguf --tokens 785,6722,315,9625,374 -n 16
 ```
 
 Set `SKYLA_VALIDATION=1` to enable the Khronos validation layer, and `SKYLA_DEVICE=<n>`
