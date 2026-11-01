@@ -3,8 +3,8 @@ use anyhow::Result;
 use skyla_gguf::DType;
 use skyla_vk::{Buffer, Context, Pipeline};
 
-pub const WAVES_PER_GROUP: u32 = 4;
-pub const ROWS_PER_WAVE: u32 = 2;
+pub const Q8_0_TACTIC: (u32, u32) = (4, 2);
+pub const KQUANT_TACTIC: (u32, u32) = (2, 4);
 pub const MATMUL_TILE_ROWS: u32 = 128;
 
 pub struct Matvec {
@@ -29,13 +29,15 @@ struct Kind<'a> {
     dual_view: bool,
     push: u32,
     matmul_type: Option<u32>,
+    tactic: (u32, u32),
 }
 
 fn matvec(ctx: &Context, kind: Kind, weights: &[Buffer], a: &Buffer) -> Result<Matvec> {
+    let (waves, rows) = kind.tactic;
     let build = |accum: u32| -> Result<Pipeline> {
         let spec = match kind.matmul_type {
             Some(ty) => vec![ty, accum],
-            None => vec![WAVES_PER_GROUP, accum, ROWS_PER_WAVE],
+            None => vec![waves, accum, rows],
         };
         let batched = kind.matmul_type.is_some();
         let n_buffers = 2 + kind.dual_view as u32 + 1 + batched as u32;
@@ -58,7 +60,7 @@ fn matvec(ctx: &Context, kind: Kind, weights: &[Buffer], a: &Buffer) -> Result<M
         acc: build(1)?,
         rows_per_group: match kind.matmul_type {
             Some(_) => MATMUL_TILE_ROWS,
-            None => WAVES_PER_GROUP * ROWS_PER_WAVE,
+            None => waves * rows,
         },
     })
 }
@@ -71,23 +73,25 @@ impl Kernels {
             Ok(p)
         };
         use skyla_shaders as s;
-        let kind = |spirv, dual_view, push, matmul_type| Kind {
+        let kind = |spirv, dual_view, push, matmul_type, tactic| Kind {
             spirv,
             dual_view,
             push,
             matmul_type,
+            tactic,
         };
         let w0 = &weights[0];
+        let mm = (0, 0);
         Ok(Self {
             decode: [
-                matvec(ctx, kind(s::MATVEC_Q8_0, true, 24, None), weights, a)?,
-                matvec(ctx, kind(s::MATVEC_Q4K, false, 24, None), weights, a)?,
-                matvec(ctx, kind(s::MATVEC_Q6K, true, 32, None), weights, a)?,
+                matvec(ctx, kind(s::MATVEC_Q8_0, true, 24, None, Q8_0_TACTIC), weights, a)?,
+                matvec(ctx, kind(s::MATVEC_Q4K, false, 24, None, KQUANT_TACTIC), weights, a)?,
+                matvec(ctx, kind(s::MATVEC_Q6K, true, 32, None, KQUANT_TACTIC), weights, a)?,
             ],
             batch: [
-                matvec(ctx, kind(s::MATMUL, true, 40, Some(0)), weights, a)?,
-                matvec(ctx, kind(s::MATMUL, true, 40, Some(1)), weights, a)?,
-                matvec(ctx, kind(s::MATMUL, true, 40, Some(2)), weights, a)?,
+                matvec(ctx, kind(s::MATMUL, true, 40, Some(0), mm), weights, a)?,
+                matvec(ctx, kind(s::MATMUL, true, 40, Some(1), mm), weights, a)?,
+                matvec(ctx, kind(s::MATMUL, true, 40, Some(2), mm), weights, a)?,
             ],
             rmsnorm: build(s::RMSNORM, &[w0, a, a], 24, &[])?,
             qkv: build(s::QKV_PREP, &[w0, a, a, kv], 56, &[])?,

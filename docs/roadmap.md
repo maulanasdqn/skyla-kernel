@@ -95,9 +95,9 @@ exceeds 200 lines.
   against `skyla-ref`.
 - **M3 — K-quants.** Q4_K and Q6_K matrix-vector kernels, checked against the CPU
   reference. Load R1-0528-Qwen3-8B, splitting weights across buffers (2 GiB allocation cap).
-- **M4 — Ahead-of-time engine.** `skyla compile` emits an engine: autotuned tactics with
-  evidence, repacked weights, a static memory plan and a pre-recorded command buffer.
-  Goal: beat llama.cpp decode speed on R1-0528-Qwen3-8B.
+- **M4 — Decode tactics.** Per-format matvec tactics chosen by A/B evidence, faster
+  RMSNorm; fusion and device-local staging measured and rejected (done). Still open: a
+  `skyla compile` step that runs the sweeps on the target and stores the evidence.
 - **M5 — Long reasoning.** Split-K decode attention (done in M2), tokenizer and the R1
   chat template, streaming `skyla chat` with the `<think>` section shown separately (done),
   Q8 KV cache (open).
@@ -258,6 +258,34 @@ reference with identical probabilities to 4 decimals; the worst logit difference
 
 The attention kernel also stopped writing partial results for context chunks beyond
 the current position (previously ~77 MB of dead writes per decode step on the 8B model).
+
+## M4 result: decode tactics, accepted and rejected
+
+Bandwidth on this laptop moves with page placement and temperature, so every decision
+below comes from interleaved A/B runs of separately built binaries in one session
+(R1-8B, greedy decode, mean of 2–3 runs each), never from runs taken at different times.
+
+| Tactic | Decode (tok/s) | Verdict |
+|---|---:|---|
+| M6 baseline: 4 waves × 2 rows per wave for every format | 7.03 | |
+| Activations in `DEVICE_LOCAL` memory with staging copies | 6.84 | rejected |
+| … plus RMSNorm fused into the next matvec | 5.59 | rejected |
+| … plus SiLU fused into the down projection | 6.00 | rejected |
+| … plus both fusions | 5.00 | rejected |
+| **Per-format matvec tactic: K-quants 2 waves × 4 rows, Q8_0 4 × 2** | **7.55** | accepted |
+| **… plus RMSNorm with 1024 threads (3.1 ms → 0.43 ms per step)** | **7.58** | accepted |
+
+Fusion loses here because each lane then loads twice the activations (x and the norm
+weight, or gate and up) and holds more registers, which lowers occupancy in kernels
+that need every resident wave to hide DRAM latency. The staging design sped up
+RMSNorm but made other small kernels slower and added copies.
+
+Rows-per-wave sweep for the K-quant kernels (waves 1–8 × rows 1–16): 1 row 5.3–5.6,
+2 rows 6.5–7.1, 4 rows 7.5–7.6, 8 rows 7.6, 16 rows 6.3–6.4 tok/s. The best Q8_0
+setting on Qwen3-0.6B was 2 rows, so the tactic is chosen per weight format.
+
+After M4 the weight matvecs read at 36–38 GB/s against a ~40 GB/s roofline measured in
+the same session; norms, RoPE, attention and SiLU together cost ~3% of a decode step.
 
 ### Finding: memory placement decides bandwidth
 

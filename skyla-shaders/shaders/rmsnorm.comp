@@ -2,7 +2,7 @@
 #extension GL_KHR_shader_subgroup_arithmetic : require
 #extension GL_KHR_shader_subgroup_basic : require
 
-layout(local_size_x = 256) in;
+layout(local_size_x = 1024) in;
 
 layout(std430, binding = 0) readonly buffer W { float w[]; };
 layout(std430, binding = 1) buffer A { float a[]; };
@@ -17,7 +17,7 @@ layout(push_constant) uniform Push {
     uint stride;
 } p;
 
-shared float partial[4];
+shared float partial[16];
 
 void main() {
     uint tok = gl_WorkGroupID.y;
@@ -29,7 +29,7 @@ void main() {
     uint t = gl_LocalInvocationID.x;
 
     float ss = 0.0;
-    for (uint i = t; i < p.n; i += 256) {
+    for (uint i = t; i < p.n; i += 1024) {
         float v = a[x + i];
         ss += v * v;
     }
@@ -40,8 +40,12 @@ void main() {
     memoryBarrierShared();
     barrier();
 
-    float r = inversesqrt((partial[0] + partial[1] + partial[2] + partial[3]) / float(p.n) + p.eps);
-    for (uint i = t; i < p.n; i += 256) {
+    float total = 0.0;
+    for (uint i = 0; i < 16; i++) {
+        total += partial[i];
+    }
+    float r = inversesqrt(total / float(p.n) + p.eps);
+    for (uint i = t; i < p.n; i += 1024) {
         a[y + i] = a[x + i] * r * w[p.w_off + i];
     }
 }
