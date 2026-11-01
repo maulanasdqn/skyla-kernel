@@ -123,6 +123,8 @@ enum Command {
         addr: std::net::SocketAddr,
         #[arg(long, default_value = "skyla-web/dist", help = "Directory with the built web UI")]
         web: PathBuf,
+        #[arg(long, help = "Directory scanned for GGUF models (default: two levels above MODEL)")]
+        models: Option<PathBuf>,
     },
 }
 
@@ -175,12 +177,14 @@ fn main() -> Result<()> {
             kv,
             addr,
             web,
+            models,
         } => skyla_server::serve(skyla_server::Config {
             model,
             context: ctx,
             kv: kv.precision(),
             addr,
             web,
+            models,
         }),
     }
 }

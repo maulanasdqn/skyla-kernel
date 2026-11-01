@@ -1,3 +1,4 @@
+use crate::template::Template;
 use crate::{Sampler, Utf8Stream};
 use anyhow::{bail, Result};
 use skyla_engine::{Engine, KvPrecision};
@@ -19,13 +20,17 @@ pub struct Session<'g> {
     kv: KvPrecision,
     bos: String,
     think: (Option<u32>, Option<u32>),
+    template: Template,
+    stops: Vec<u32>,
     context: usize,
     fresh: bool,
+    open_reply: bool,
 }
 
 impl<'g> Session<'g> {
     pub fn new(g: &'g Gguf, tok: &'g Tokenizer, context: usize, kv: KvPrecision) -> Result<Self> {
         let engine = Engine::new(g, context, kv, false)?;
+        let template = Template::detect(g);
         Ok(Self {
             engine,
             tok,
@@ -33,13 +38,17 @@ impl<'g> Session<'g> {
             kv,
             bos: String::from_utf8_lossy(&tok.decode(tok.bos)).into_owned(),
             think: (tok.id("<think>"), tok.id("</think>")),
+            template,
+            stops: template.stop_ids(tok),
             context,
             fresh: true,
+            open_reply: false,
         })
     }
 
     pub fn info(&self) -> Info {
         Info {
+            model_id: String::new(),
             model: self.model.clone(),
             device: self.engine.device_name(),
             context: self.context,
@@ -51,6 +60,7 @@ impl<'g> Session<'g> {
     pub fn reset(&mut self) {
         self.engine.reset();
         self.fresh = true;
+        self.open_reply = false;
     }
 
     pub fn turn(
@@ -61,12 +71,9 @@ impl<'g> Session<'g> {
         max_tokens: usize,
         mut emit: impl FnMut(Piece) -> bool,
     ) -> Result<Stats> {
-        let mut prompt = String::new();
-        if self.fresh {
-            prompt.push_str(&self.bos);
-            prompt.push_str(system.unwrap_or(""));
-        }
-        prompt.push_str(&format!("<｜User｜>{}<｜Assistant｜>", user.trim_end()));
+        let prompt = self
+            .template
+            .turn(&self.bos, self.fresh, self.open_reply, system, user.trim_end());
         let ids = self.tok.encode(&prompt)?;
         if self.engine.pos as usize + ids.len() + max_tokens > self.context {
             bail!("the conversation is full ({} tokens); start a new chat", self.context);
@@ -81,11 +88,13 @@ impl<'g> Session<'g> {
         let mut utf8 = Utf8Stream::default();
         let mut thinking = false;
         let mut tokens = 0;
+        self.open_reply = true;
         while tokens < max_tokens {
             let next = sampler.sample(&logits);
             tokens += 1;
-            if next == self.tok.eos {
+            if self.stops.contains(&next) {
                 self.engine.step(next)?;
+                self.open_reply = false;
                 break;
             }
             let keep_going = match Some(next) {

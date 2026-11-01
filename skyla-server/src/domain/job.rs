@@ -1,4 +1,5 @@
 use skyla_types::{Info, ServerMessage, Settings};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
@@ -28,5 +29,10 @@ pub enum Job {
         settings: Settings,
         events: mpsc::UnboundedSender<ServerMessage>,
         cancel: Cancel,
+    },
+    Load {
+        id: String,
+        path: PathBuf,
+        reply: oneshot::Sender<Result<Info, String>>,
     },
 }

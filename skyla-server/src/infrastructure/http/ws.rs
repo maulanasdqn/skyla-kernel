@@ -40,6 +40,13 @@ async fn handle(
             let _ = events.send(ServerMessage::Reset { position });
             Ok(())
         }
+        ClientMessage::Load { id } => {
+            cancel.set();
+            let _ = events.send(ServerMessage::Loading { id: id.clone() });
+            let info = engine.load(&id).await?;
+            let _ = events.send(ServerMessage::Info(info));
+            Ok(())
+        }
     }
 }
 
@@ -48,6 +55,9 @@ async fn session(socket: WebSocket, engine: EngineHandle) {
     let (events, mut outbox) = mpsc::unbounded_channel::<ServerMessage>();
     let cancel = Cancel::default();
 
+    let _ = events.send(ServerMessage::Models {
+        models: engine.models(),
+    });
     if let Ok(info) = engine.info().await {
         let _ = events.send(ServerMessage::Info(info));
     }

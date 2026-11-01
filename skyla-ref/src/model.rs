@@ -1,4 +1,5 @@
-use crate::ops::{dot, rmsnorm, rmsnorm_inplace, silu, softmax};
+use crate::ffn::Ffn;
+use crate::ops::{dot, rmsnorm, rmsnorm_inplace, softmax};
 use crate::{rope_neox, Config, Matrix};
 use anyhow::Result;
 use skyla_gguf::Gguf;
@@ -12,13 +13,11 @@ struct Layer<'a> {
     wk: Matrix<'a>,
     wv: Matrix<'a>,
     wo: Matrix<'a>,
-    w_gate: Matrix<'a>,
-    w_up: Matrix<'a>,
-    w_down: Matrix<'a>,
+    ffn: Ffn<'a>,
 }
 
 impl<'a> Layer<'a> {
-    fn load(g: &'a Gguf, i: usize) -> Result<Self> {
+    fn load(g: &'a Gguf, i: usize, c: &Config) -> Result<Self> {
         let n = |s: &str| format!("blk.{i}.{s}.weight");
         Ok(Self {
             attn_norm: g.to_f32(&n("attn_norm"))?,
@@ -29,9 +28,7 @@ impl<'a> Layer<'a> {
             wk: Matrix::new(g, &n("attn_k"))?,
             wv: Matrix::new(g, &n("attn_v"))?,
             wo: Matrix::new(g, &n("attn_output"))?,
-            w_gate: Matrix::new(g, &n("ffn_gate"))?,
-            w_up: Matrix::new(g, &n("ffn_up"))?,
-            w_down: Matrix::new(g, &n("ffn_down"))?,
+            ffn: Ffn::load(g, i, c)?,
         })
     }
 }
@@ -51,7 +48,7 @@ impl<'a> Model<'a> {
     pub fn load(g: &'a Gguf) -> Result<Self> {
         let config = Config::from_gguf(g)?;
         let layers = (0..config.n_layer)
-            .map(|i| Layer::load(g, i))
+            .map(|i| Layer::load(g, i, &config))
             .collect::<Result<Vec<_>>>()?;
         let token_embd = Matrix::new(g, "token_embd.weight")?;
         let output = match g.tensors.contains_key("output.weight") {
@@ -89,8 +86,6 @@ impl<'a> Model<'a> {
         let mut v = vec![0.0f32; kv_dim];
         let mut attn = vec![0.0f32; c.n_head * hd];
         let mut o = vec![0.0f32; c.n_embd];
-        let mut gate = vec![0.0f32; c.n_ff];
-        let mut up = vec![0.0f32; c.n_ff];
 
         for l in 0..self.layers.len() {
             let layer = &self.layers[l];
@@ -114,10 +109,7 @@ impl<'a> Model<'a> {
             layer.wo.matvec(&attn, &mut o);
             x.iter_mut().zip(&o).for_each(|(x, o)| *x += o);
             rmsnorm(&x, &layer.ffn_norm, c.eps, &mut n);
-            layer.w_gate.matvec(&n, &mut gate);
-            layer.w_up.matvec(&n, &mut up);
-            gate.iter_mut().zip(&up).for_each(|(g, u)| *g = silu(*g) * u);
-            layer.w_down.matvec(&gate, &mut o);
+            layer.ffn.forward(&n, &mut o);
             x.iter_mut().zip(&o).for_each(|(x, o)| *x += o);
         }
 

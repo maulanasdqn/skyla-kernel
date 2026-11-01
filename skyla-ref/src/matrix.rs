@@ -13,7 +13,10 @@ pub struct Matrix<'a> {
 impl<'a> Matrix<'a> {
     pub fn new(g: &'a Gguf, name: &str) -> Result<Self> {
         let t = g.tensor(name)?;
-        ensure!(t.dims.len() == 2, "{name} is not a matrix");
+        ensure!(
+            matches!(t.dims.len(), 2 | 3),
+            "{name} is not a matrix or a stack of experts"
+        );
         let (n_in, n_out) = (t.dims[0] as usize, t.dims[1] as usize);
         Ok(Self {
             dtype: t.dtype,
@@ -22,6 +25,14 @@ impl<'a> Matrix<'a> {
             n_out,
             row_bytes: t.dtype.row_bytes(n_in)?,
         })
+    }
+
+    pub fn expert(&self, e: usize) -> Self {
+        let size = self.n_out * self.row_bytes;
+        Self {
+            data: &self.data[e * size..(e + 1) * size],
+            ..*self
+        }
     }
 
     pub fn row(&self, r: usize, out: &mut [f32]) {

@@ -1,5 +1,6 @@
 mod sampler;
 mod session;
+mod template;
 mod utf8;
 
 pub use sampler::{seed_from_clock, Sampler};

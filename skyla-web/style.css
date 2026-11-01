@@ -72,6 +72,22 @@ body {
   text-overflow: ellipsis;
 }
 
+.picker {
+  max-width: 100%;
+  font-weight: 600;
+  background: transparent;
+  color: var(--text);
+  border: none;
+  padding: 0;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.picker option {
+  background: var(--panel);
+  color: var(--text);
+}
+
 .detail,
 .stats {
   color: var(--muted);

@@ -2,6 +2,7 @@ mod composer;
 mod header;
 mod message;
 mod messages;
+mod picker;
 mod settings;
 
 pub use composer::Composer;

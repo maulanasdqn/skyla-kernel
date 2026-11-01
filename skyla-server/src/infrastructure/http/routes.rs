@@ -9,6 +9,7 @@ pub fn router(engine: EngineHandle, web: &Path) -> Router {
     let site = ServeDir::new(web).fallback(ServeFile::new(web.join("index.html")));
     Router::new()
         .route("/api/info", get(handlers::info))
+        .route("/api/models", get(handlers::models))
         .route("/api/reset", post(handlers::reset))
         .route("/api/ws", get(ws::upgrade))
         .fallback_service(site)

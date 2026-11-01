@@ -12,7 +12,8 @@ pub fn Composer() -> impl IntoView {
 
     let send = move || {
         let text = draft.get_untracked();
-        if text.trim().is_empty() || chat.busy.get_untracked() || !chat.connected.get_untracked() {
+        let loading = chat.loading.with_untracked(Option::is_some);
+        if text.trim().is_empty() || chat.busy.get_untracked() || loading || !chat.connected.get_untracked() {
             return;
         }
         chat.push(true, text.clone());

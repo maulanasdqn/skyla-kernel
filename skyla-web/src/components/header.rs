@@ -1,3 +1,4 @@
+use super::picker::ModelPicker;
 use super::settings::SettingsPanel;
 use crate::socket::Link;
 use crate::state::Chat;
@@ -10,12 +11,10 @@ pub fn Header() -> impl IntoView {
     let link = expect_context::<Link>();
     let open = RwSignal::new(false);
 
-    let title = move || {
-        chat.info
-            .with(|i| i.as_ref().map(|i| i.model.clone()))
-            .unwrap_or_else(|| "Skyla".into())
-    };
     let detail = move || {
+        if let Some(id) = chat.loading.get() {
+            return format!("loading {id} …");
+        }
         chat.info.with(|i| match i {
             Some(i) => format!(
                 "{} · {} / {} tokens · KV {}",
@@ -38,7 +37,7 @@ pub fn Header() -> impl IntoView {
             <div class="brand">
                 <span class=status></span>
                 <div>
-                    <div class="title">{title}</div>
+                    <ModelPicker/>
                     <div class="detail">{detail}</div>
                 </div>
             </div>

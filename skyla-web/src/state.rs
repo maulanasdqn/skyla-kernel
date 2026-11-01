@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use skyla_types::{Info, ServerMessage, Settings, Stats};
+use skyla_types::{Info, ModelEntry, ServerMessage, Settings, Stats};
 
 #[derive(Clone, Copy)]
 pub struct Turn {
@@ -28,6 +28,8 @@ impl Turn {
 pub struct Chat {
     pub turns: RwSignal<Vec<Turn>>,
     pub info: RwSignal<Option<Info>>,
+    pub models: RwSignal<Vec<ModelEntry>>,
+    pub loading: RwSignal<Option<String>>,
     pub busy: RwSignal<bool>,
     pub connected: RwSignal<bool>,
     pub settings: RwSignal<Settings>,
@@ -40,6 +42,8 @@ impl Chat {
         Self {
             turns: RwSignal::new(Vec::new()),
             info: RwSignal::new(None),
+            models: RwSignal::new(Vec::new()),
+            loading: RwSignal::new(None),
             busy: RwSignal::new(false),
             connected: RwSignal::new(false),
             settings: RwSignal::new(Settings::default()),
@@ -68,7 +72,21 @@ impl Chat {
 
     pub fn apply(&self, message: ServerMessage) {
         match message {
-            ServerMessage::Info(info) => self.info.set(Some(info)),
+            ServerMessage::Models { models } => self.models.set(models),
+            ServerMessage::Loading { id } => {
+                self.loading.set(Some(id));
+                self.busy.set(false);
+            }
+            ServerMessage::Info(info) => {
+                let changed = self
+                    .info
+                    .with_untracked(|i| i.as_ref().is_some_and(|i| i.model_id != info.model_id));
+                if changed {
+                    self.turns.set(Vec::new());
+                }
+                self.loading.set(None);
+                self.info.set(Some(info));
+            }
             ServerMessage::Started => self.busy.set(true),
             ServerMessage::Token { text, thinking } => {
                 if let Some(turn) = self.last_reply() {
@@ -90,6 +108,7 @@ impl Chat {
                 self.busy.set(false);
             }
             ServerMessage::Error { message } => {
+                self.loading.set(None);
                 match self.last_reply() {
                     Some(turn) => turn.error.set(Some(message)),
                     None => {

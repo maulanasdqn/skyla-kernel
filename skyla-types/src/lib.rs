@@ -27,10 +27,21 @@ pub enum ClientMessage {
     Chat { text: String, settings: Settings },
     Stop,
     Reset,
+    Load { id: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ModelEntry {
+    pub id: String,
+    pub name: String,
+    pub arch: String,
+    pub size_gb: f64,
+    pub supported: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Info {
+    pub model_id: String,
     pub model: String,
     pub device: String,
     pub context: usize,
@@ -51,6 +62,8 @@ pub struct Stats {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
+    Models { models: Vec<ModelEntry> },
+    Loading { id: String },
     Info(Info),
     Started,
     Token { text: String, thinking: bool },
