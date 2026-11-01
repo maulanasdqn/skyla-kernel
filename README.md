@@ -4,7 +4,8 @@
 
 Skyla runs DeepSeek-R1-0528-Qwen3-8B on a Ryzen 7 7730U laptop with no discrete GPU,
 **1.9× faster than llama.cpp at generation and 1.7× faster at prompt processing** on the
-same hardware, and checks every kernel against a plain CPU reference.
+same hardware, and checks every kernel against a plain CPU reference. It ships a terminal
+chat and a browser chat UI (Rust/WebAssembly) that can switch between models at runtime.
 
 It applies the idea behind [Netra Kernel](https://github.com/NetraRuntime/netra-kernel),
 compile for the exact serving contract and launch only specialized kernels, to a consumer
@@ -23,8 +24,13 @@ Windows 11, AMD driver 23.19, against llama.cpp b12032 on the same laptop:
 | Prompt processing (tok/s) | **60** | 35.6 | 34.0 |
 | Default context | 16 384 tokens | | |
 
-Qwen3-0.6B (Q8_0), the development model: 55 tok/s generation and 686 tok/s prompt
-processing, against llama.cpp's 44.5 and 436.
+Other models on the same laptop (Skyla, 256-token prompt):
+
+| Model | Size | Generation | Prompt processing | Notes |
+|---|---:|---:|---:|---|
+| Qwen3-4B-Instruct-2507 (Q4_K_M) | 2.3 GB | 12.0 tok/s | 118 tok/s | No thinking; good for fast role-play and game characters |
+| DeepSeek-R1-0528-Qwen3-8B (Q4_K_M) | 4.7 GB | 7.6 tok/s | 60 tok/s | Reasoning model; writes a `<think>` section first |
+| Qwen3-0.6B (Q8_0) | 0.6 GB | 55 tok/s | 686 tok/s | Development model (llama.cpp: 44.5 / 436) |
 
 Generation is bound by memory bandwidth. The weight kernels read at 36–38 GB/s against a
 measured ~40 GB/s roofline, so Skyla runs at about 95% of what this memory system can
@@ -66,18 +72,44 @@ cargo build --release
 `build.rs` compiles every shader in `skyla-shaders/shaders` with `glslc`; set `GLSLC` if
 it is not found through `VULKAN_SDK`.
 
-### Get a model
+### Get models
 
-Any GGUF of the `qwen3` architecture with Q8_0, Q4_K or Q6_K weights works. The target:
+Any GGUF of the `qwen3` architecture with Q8_0, Q4_K or Q6_K weights works. Keep one
+folder per model under a common directory so the browser UI can list them:
 
 ```powershell
-curl -L -o r1-8b.gguf https://huggingface.co/mradermacher/Josiefied-DeepSeek-R1-0528-Qwen3-8B-abliterated-v1-GGUF/resolve/main/Josiefied-DeepSeek-R1-0528-Qwen3-8B-abliterated-v1.Q4_K_M.gguf
+mkdir models\r1-8b, models\qwen3-4b
+curl -L -o models\r1-8b\r1-8b.gguf https://huggingface.co/mradermacher/Josiefied-DeepSeek-R1-0528-Qwen3-8B-abliterated-v1-GGUF/resolve/main/Josiefied-DeepSeek-R1-0528-Qwen3-8B-abliterated-v1.Q4_K_M.gguf
+curl -L -o models\qwen3-4b\qwen3-4b.gguf https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf
 ```
 
-### Chat
+The chat template is detected from the GGUF: DeepSeek-R1 (`<｜User｜>…<｜Assistant｜>`) or
+ChatML (`<|im_start|>…<|im_end|>`, Qwen3 Instruct).
+
+### Browser chat UI
+
+The UI is a Leptos app compiled to WebAssembly with [trunk](https://trunkrs.dev/); the
+server is axum and streams tokens over a WebSocket. The engine stays native: Vulkan does
+not run in a browser.
 
 ```powershell
-./target/release/skyla chat r1-8b.gguf
+rustup target add wasm32-unknown-unknown
+cargo install trunk --locked
+cd skyla-web; trunk build --release; cd ..
+./target/release/skyla serve models\qwen3-4b\qwen3-4b.gguf
+```
+
+Open <http://127.0.0.1:8080>. The header's model menu lists every GGUF under `models\`
+(`--models <dir>` to point elsewhere) and switches models in a few seconds, marking
+architectures Skyla cannot run yet. Replies stream with the thinking section collapsible,
+**Stop** interrupts generation, **New chat** clears the context, and **Settings** holds
+temperature, top-p, the reply length limit and a system prompt (for example a game
+character's persona). Every reply shows its token count, speed and context use.
+
+### Terminal chat
+
+```powershell
+./target/release/skyla chat models\r1-8b\r1-8b.gguf
 ```
 
 Replies stream as they are generated, with the model's `<think>` section dimmed. `/reset`
@@ -102,7 +134,8 @@ Hmm, user is asking for the multiplication of 17 and 23 with a request for a sho
 
 | Command | What it does |
 |---|---|
-| `skyla chat <model>` | Streaming chat with the DeepSeek-R1 template |
+| `skyla serve <model>` | Browser chat UI on `--addr` (default `127.0.0.1:8080`); `--models <dir>` sets the folder listed in the model menu, `--web <dir>` the built UI |
+| `skyla chat <model>` | Terminal chat with the model's own template (DeepSeek-R1 or ChatML) |
 | `skyla run <model> --tokens <ids>` | Greedy decode from token ids; `--check` compares every step with the CPU reference, `--profile` times every GPU stage |
 | `skyla ref <model> --tokens <ids>` | Greedy decode with the CPU reference; `--expect <ids>` teacher-forces another engine's output |
 | `skyla tokenize <model> <text>` | Token ids from the model's tokenizer |
@@ -214,6 +247,10 @@ token and the largest logit difference at every step, with the Vulkan validation
 | `skyla-ref` | f32 CPU reference forward pass and YaRN RoPE tables |
 | `skyla-tok` | Byte-level BPE tokenizer read from GGUF metadata |
 | `skyla-engine` | Weight planner, activation arena, KV layouts, recorded decode and prefill graphs |
+| `skyla-chat` | Chat sessions: template detection (DeepSeek-R1, ChatML), sampling, UTF-8 streaming, `<think>` tracking |
+| `skyla-types` | Messages shared by the server and the WebAssembly UI |
+| `skyla-server` | axum server: WebSocket streaming with stop and reset, model catalog and switching, static UI; the engine runs on its own thread |
+| `skyla-web` | Leptos chat UI compiled to WebAssembly |
 | `skyla-cli` | The `skyla` binary |
 
 Code conventions: crates live at the repository root, source files stay under 200 lines,
@@ -222,8 +259,10 @@ which also holds every measurement behind the numbers above.
 
 ## Limitations
 
-- One architecture (`qwen3`, head size 128) and three weight formats (Q8_0, Q4_K, Q6_K).
-- Batch size 1 for generation; one conversation at a time.
+- Dense `qwen3` models (head size 128) and three weight formats (Q8_0, Q4_K, Q6_K).
+  Mixture-of-experts `qwen3moe` (Qwen3-30B-A3B) is in progress: the CPU reference
+  supports it, the GPU engine does not yet.
+- Batch size 1 for generation; one conversation at a time, shared by every browser tab.
 - Prefill slows on long contexts (about 40 tok/s at 4k tokens) because each query in a
   32-token chunk reads the KV cache separately.
 - Earlier turns keep their `<think>` text in context, unlike the reference chat template,
@@ -233,9 +272,10 @@ which also holds every measurement behind the numbers above.
 
 ## Roadmap
 
-See [docs/roadmap.md](docs/roadmap.md). Next: share KV reads across a prefill chunk, a
-`skyla compile` step that runs the tactic sweeps on the target and stores the evidence,
-and MoE support for Qwen3-30B-A3B.
+See [docs/roadmap.md](docs/roadmap.md). In progress: MoE on the GPU for
+Qwen3-30B-A3B-Instruct-2507. Next: share KV reads across a prefill chunk, an
+OpenAI-compatible endpoint for game engines, and a `skyla compile` step that runs the
+tactic sweeps on the target and stores the evidence.
 
 ## License
 
