@@ -31,8 +31,8 @@ Qwen3-0.6B carries over with different constants:
 | Head dim | 128 | 128 |
 | FFN size | 3072 | 12288 |
 | Vocabulary | 151 936 | 151 936 |
-| Weights per token | 633 MB (Q8_0) | ~4.7 GB (Q4_K_M: Q4_K + Q6_K blocks) |
-| Decode ceiling at 35 GB/s | ~55 tok/s | **~7.4 tok/s** |
+| Weights per token | 633 MB (Q8_0) | 5.03 GB / 4.68 GiB (Q4_K_M: Q4_K + Q6_K blocks) |
+| Decode ceiling at 35 GB/s | ~55 tok/s | **~7.0 tok/s** |
 
 R1 is a reasoning model and routinely writes thousands of tokens before answering, so
 long-context decode matters. An FP16 KV cache costs 144 KiB per token (36 layers × 2 ×
@@ -109,6 +109,17 @@ exceeds 200 lines.
 
 At 44.5 tok/s the iGPU decode streams about 27 GB/s of weights. The theoretical peak
 for DDR4-3200 dual-channel is 51.2 GB/s.
+
+## Baseline (llama.cpp b12032, R1-0528-Qwen3-8B abliterated Q4_K_M)
+
+| Backend | pp512 (tok/s) | tg128 (tok/s) |
+|---|---:|---:|
+| Vulkan, all layers on iGPU | 35.64 ± 1.29 | 4.00 ± 0.37 |
+| CPU | 34.03 ± 0.49 | 4.20 ± 0.09 |
+
+On the target model llama.cpp's iGPU decode is slower than its CPU decode and streams
+only about 20 GB/s, 57% of the measured 35 GB/s roofline. The ceiling is about
+7.0 tok/s, so a Vega-specific Q4_K/Q6_K path has up to 1.75× of headroom.
 
 ## M0 result: measured roofline
 
