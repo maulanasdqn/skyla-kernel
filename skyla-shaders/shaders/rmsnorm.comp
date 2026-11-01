@@ -6,6 +6,7 @@ layout(local_size_x = 256) in;
 
 layout(std430, binding = 0) readonly buffer W { float w[]; };
 layout(std430, binding = 1) buffer A { float a[]; };
+layout(std430, binding = 2) readonly buffer C { uint ctl[]; };
 
 layout(push_constant) uniform Push {
     uint x_off;
@@ -13,15 +14,23 @@ layout(push_constant) uniform Push {
     uint y_off;
     uint n;
     float eps;
+    uint stride;
 } p;
 
 shared float partial[4];
 
 void main() {
+    uint tok = gl_WorkGroupID.y;
+    if (tok >= ctl[2]) {
+        return;
+    }
+    uint x = p.x_off + tok * p.stride;
+    uint y = p.y_off + tok * p.stride;
     uint t = gl_LocalInvocationID.x;
+
     float ss = 0.0;
     for (uint i = t; i < p.n; i += 256) {
-        float v = a[p.x_off + i];
+        float v = a[x + i];
         ss += v * v;
     }
     ss = subgroupAdd(ss);
@@ -33,6 +42,6 @@ void main() {
 
     float r = inversesqrt((partial[0] + partial[1] + partial[2] + partial[3]) / float(p.n) + p.eps);
     for (uint i = t; i < p.n; i += 256) {
-        a[p.y_off + i] = a[p.x_off + i] * r * w[p.w_off + i];
+        a[y + i] = a[x + i] * r * w[p.w_off + i];
     }
 }

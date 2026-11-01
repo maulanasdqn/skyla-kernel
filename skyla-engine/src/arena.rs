@@ -3,6 +3,9 @@ use anyhow::{ensure, Result};
 use skyla_ref::Config;
 use skyla_vk::{Buffer, BufferUsageFlags, Context};
 
+pub const ATTENTION_CHUNK: u32 = 64;
+pub const BATCH: usize = 32;
+
 pub struct Arena {
     pub buffer: Buffer,
     pub kv: Buffer,
@@ -14,38 +17,57 @@ pub struct Arena {
     pub attn: u32,
     pub gate: u32,
     pub up: u32,
-    pub logits: u32,
     pub part: u32,
+    pub last: u32,
+    pub logits: u32,
+    pub s_embd: u32,
+    pub s_q: u32,
+    pub s_kv: u32,
+    pub s_ff: u32,
+    pub s_part: u32,
     pub n_split: u32,
     pub max_ctx: u32,
     kv_dim: u32,
 }
 
-pub const ATTENTION_CHUNK: u32 = 64;
+struct Layout {
+    size: usize,
+}
+
+impl Layout {
+    fn batched(&mut self, width: usize) -> (u32, u32) {
+        let stride = width.next_multiple_of(64);
+        let off = self.size;
+        self.size += stride * BATCH;
+        (off as u32, stride as u32)
+    }
+
+    fn single(&mut self, width: usize) -> u32 {
+        let off = self.size;
+        self.size += width.next_multiple_of(64);
+        off as u32
+    }
+}
 
 impl Arena {
     pub fn new(ctx: &Context, c: &Config, max_ctx: usize) -> Result<Self> {
-        let mut size = 64usize;
-        let mut region = |n: usize| {
-            let off = size;
-            size = (size + n).next_multiple_of(64);
-            off as u32
-        };
-        let x = region(c.n_embd);
-        let n = region(c.n_embd);
-        let q = region(c.n_head * c.head_dim);
-        let k = region(c.n_head_kv * c.head_dim);
-        let v = region(c.n_head_kv * c.head_dim);
-        let attn = region(c.n_head * c.head_dim);
-        let gate = region(c.n_ff);
-        let up = region(c.n_ff);
-        let logits = region(c.n_vocab);
         let n_split = (max_ctx as u32).div_ceil(ATTENTION_CHUNK);
-        let part = region(c.n_head * n_split as usize * 130);
+        let mut l = Layout { size: 64 };
+        let (x, s_embd) = l.batched(c.n_embd);
+        let (n, _) = l.batched(c.n_embd);
+        let (q, s_q) = l.batched(c.n_head * c.head_dim);
+        let (k, s_kv) = l.batched(c.n_head_kv * c.head_dim);
+        let (v, _) = l.batched(c.n_head_kv * c.head_dim);
+        let (attn, _) = l.batched(c.n_head * c.head_dim);
+        let (gate, s_ff) = l.batched(c.n_ff);
+        let (up, _) = l.batched(c.n_ff);
+        let (part, s_part) = l.batched(c.n_head * n_split as usize * 130);
+        let last = l.single(c.n_embd);
+        let logits = l.single(c.n_vocab);
 
         let memory = host_memory(ctx)?;
         let usage = BufferUsageFlags::STORAGE_BUFFER;
-        let buffer = ctx.alloc_buffer(size as u64 * 4, usage, memory)?;
+        let buffer = ctx.alloc_buffer(l.size as u64 * 4, usage, memory)?;
         let kv_dim = c.n_head_kv * c.head_dim;
         let kv_bytes = (c.n_layer * 2 * max_ctx * kv_dim * 2) as u64;
         ensure!(
@@ -65,8 +87,14 @@ impl Arena {
             attn,
             gate,
             up,
-            logits,
             part,
+            last,
+            logits,
+            s_embd,
+            s_q,
+            s_kv,
+            s_ff,
+            s_part,
             n_split,
             max_ctx: max_ctx as u32,
             kv_dim: kv_dim as u32,

@@ -5,41 +5,61 @@ use skyla_vk::{Buffer, Context, Pipeline};
 
 pub const WAVES_PER_GROUP: u32 = 4;
 pub const ROWS_PER_WAVE: u32 = 2;
-pub const ROWS_PER_GROUP: u32 = WAVES_PER_GROUP * ROWS_PER_WAVE;
+pub const MATMUL_TILE_ROWS: u32 = 128;
 
 pub struct Matvec {
     plain: Pipeline,
     acc: Pipeline,
+    pub rows_per_group: u32,
 }
 
 pub struct Kernels {
-    q8_0: Matvec,
-    q4k: Matvec,
-    q6k: Matvec,
+    decode: [Matvec; 3],
+    batch: [Matvec; 3],
     pub rmsnorm: Pipeline,
     pub qkv: Pipeline,
     pub attention: Pipeline,
     pub merge: Pipeline,
     pub silu: Pipeline,
+    pub take_last: Pipeline,
 }
 
-fn matvec(ctx: &Context, spirv: &[u8], weights: &[Buffer], a: &Buffer, dual_view: bool, push: u32) -> Result<Matvec> {
-    let n_sets = weights.len() as u32;
+struct Kind<'a> {
+    spirv: &'a [u8],
+    dual_view: bool,
+    push: u32,
+    matmul_type: Option<u32>,
+}
+
+fn matvec(ctx: &Context, kind: Kind, weights: &[Buffer], a: &Buffer) -> Result<Matvec> {
     let build = |accum: u32| -> Result<Pipeline> {
-        let n_buffers = if dual_view { 4 } else { 3 };
-        let spec = [WAVES_PER_GROUP, accum, ROWS_PER_WAVE];
-        let p = ctx.create_pipeline_sets(spirv, n_buffers, push, &spec, n_sets)?;
+        let spec = match kind.matmul_type {
+            Some(ty) => vec![ty, accum],
+            None => vec![WAVES_PER_GROUP, accum, ROWS_PER_WAVE],
+        };
+        let batched = kind.matmul_type.is_some();
+        let n_buffers = 2 + kind.dual_view as u32 + 1 + batched as u32;
+        let p = ctx.create_pipeline_sets(kind.spirv, n_buffers, kind.push, &spec, weights.len() as u32)?;
         for (i, w) in weights.iter().enumerate() {
-            match dual_view {
-                true => p.bind_set_buffers(i, &[w, w, a, a]),
-                false => p.bind_set_buffers(i, &[w, a, a]),
+            let mut bufs = vec![w];
+            if kind.dual_view {
+                bufs.push(w);
             }
+            bufs.extend([a, a]);
+            if batched {
+                bufs.push(a);
+            }
+            p.bind_set_buffers(i, &bufs);
         }
         Ok(p)
     };
     Ok(Matvec {
         plain: build(0)?,
         acc: build(1)?,
+        rows_per_group: match kind.matmul_type {
+            Some(_) => MATMUL_TILE_ROWS,
+            None => WAVES_PER_GROUP * ROWS_PER_WAVE,
+        },
     })
 }
 
@@ -51,29 +71,49 @@ impl Kernels {
             Ok(p)
         };
         use skyla_shaders as s;
+        let kind = |spirv, dual_view, push, matmul_type| Kind {
+            spirv,
+            dual_view,
+            push,
+            matmul_type,
+        };
         let w0 = &weights[0];
         Ok(Self {
-            q8_0: matvec(ctx, s::MATVEC_Q8_0, weights, a, true, 24)?,
-            q4k: matvec(ctx, s::MATVEC_Q4K, weights, a, false, 24)?,
-            q6k: matvec(ctx, s::MATVEC_Q6K, weights, a, true, 32)?,
-            rmsnorm: build(s::RMSNORM, &[w0, a], 20, &[])?,
-            qkv: build(s::QKV_PREP, &[w0, a, a, kv], 48, &[])?,
-            attention: build(s::ATTENTION, &[a, a, kv], 28, &[n_rep, ATTENTION_CHUNK])?,
-            merge: build(s::ATTENTION_MERGE, &[a, a], 16, &[])?,
-            silu: build(s::SILU_MUL, &[a], 12, &[])?,
+            decode: [
+                matvec(ctx, kind(s::MATVEC_Q8_0, true, 24, None), weights, a)?,
+                matvec(ctx, kind(s::MATVEC_Q4K, false, 24, None), weights, a)?,
+                matvec(ctx, kind(s::MATVEC_Q6K, true, 32, None), weights, a)?,
+            ],
+            batch: [
+                matvec(ctx, kind(s::MATMUL, true, 40, Some(0)), weights, a)?,
+                matvec(ctx, kind(s::MATMUL, true, 40, Some(1)), weights, a)?,
+                matvec(ctx, kind(s::MATMUL, true, 40, Some(2)), weights, a)?,
+            ],
+            rmsnorm: build(s::RMSNORM, &[w0, a, a], 24, &[])?,
+            qkv: build(s::QKV_PREP, &[w0, a, a, kv], 56, &[])?,
+            attention: build(s::ATTENTION, &[a, a, kv], 36, &[n_rep, ATTENTION_CHUNK])?,
+            merge: build(s::ATTENTION_MERGE, &[a, a], 24, &[])?,
+            silu: build(s::SILU_MUL, &[a, a], 16, &[])?,
+            take_last: build(s::TAKE_LAST, &[a, a], 16, &[])?,
         })
     }
 
-    pub fn matvec(&self, dtype: DType, accum: bool) -> &Pipeline {
-        let m = match dtype {
-            DType::Q4K => &self.q4k,
-            DType::Q6K => &self.q6k,
-            _ => &self.q8_0,
-        };
+    pub fn matvec(&self, dtype: DType, batched: bool) -> &Matvec {
+        let set = if batched { &self.batch } else { &self.decode };
+        match dtype {
+            DType::Q4K => &set[1],
+            DType::Q6K => &set[2],
+            _ => &set[0],
+        }
+    }
+}
+
+impl Matvec {
+    pub fn pipeline(&self, accum: bool) -> &Pipeline {
         if accum {
-            &m.acc
+            &self.acc
         } else {
-            &m.plain
+            &self.plain
         }
     }
 }

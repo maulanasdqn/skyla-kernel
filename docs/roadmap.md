@@ -101,7 +101,7 @@ exceeds 200 lines.
 - **M5 — Long reasoning.** Split-K decode attention (done in M2), tokenizer and the R1
   chat template, streaming `skyla chat` with the `<think>` section shown separately (done),
   Q8 KV cache (open).
-- **M6 — Prefill.** Batched matrix-matrix kernels for prompt processing.
+- **M6 — Prefill.** Batched matrix-matrix kernels for prompt processing (done).
 - **M7 — MoE.** Expert routing and grouped expert matrix-vector for Qwen3-30B-A3B.
 
 ## Baseline (llama.cpp b12032, Qwen3-0.6B Q8_0)
@@ -231,8 +231,33 @@ Weight matvecs run at 29–32 GB/s. RMSNorm (one workgroup, 47 µs per call) cos
 - Example: asked in Indonesian for 17 × 23, the model reasons in Indonesian and answers
   391 at 6.8 tok/s; a second turn recalls facts from the first.
 
-Prompt tokens are still fed one per step, so prefill runs at decode speed (~7 tok/s);
-batched prefill is M6.
+## M6 result: batched prefill
+
+A second recorded graph processes up to 32 prompt tokens per replay; the token count
+lives in GPU memory, so one recording serves every chunk size. Norms, QK-norm + RoPE,
+attention (causal per token), merge and SiLU take the token as a grid dimension; only
+the last token's row reaches the output projection (`take_last`).
+
+The weight GEMM went through three tactics, each checked against the CPU reference:
+
+| Tactic | R1-8B prefill (tok/s) | Why it moved |
+|---|---:|---|
+| Batched matvec, x re-read per row | 8.3 | ~600 GB of cache traffic for x per batch |
+| LDS-tiled GEMM, 128 rows × 16 tokens, f32 math | 27.8 | weights dequantized once per tile into LDS as f16 |
+| 128 × 32 tile, 4×4 micro-tile, f32 math | 33–34 | half the LDS reads per FMA |
+| **128 × 32 tile, packed-f16 FMA within each 64-wide K step, f32 across steps** | **60–62** | `v_pk_fma_f16`, no per-read conversions |
+
+llama.cpp b12032 Vulkan prefills the same model at 35.6 tok/s. Qwen3-0.6B prefills at
+686 tok/s (llama.cpp: 436).
+
+Numerical semantics of the packed-f16 tactic: weights and activations are rounded to
+f16 in LDS and 64 products are summed in f16 before joining the f32 accumulator. Over
+70 prompt tokens and 16 decode steps on R1-8B, every greedy token matched the f32 CPU
+reference with identical probabilities to 4 decimals; the worst logit difference was
+0.27, on a token the model predicts with p = 0.9996, and 0.03–0.14 elsewhere.
+
+The attention kernel also stopped writing partial results for context chunks beyond
+the current position (previously ~77 MB of dead writes per decode step on the 8B model).
 
 ### Finding: memory placement decides bandwidth
 

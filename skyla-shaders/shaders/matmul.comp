@@ -1,0 +1,171 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+layout(local_size_x = 256) in;
+layout(constant_id = 0) const uint TYPE = 1;
+layout(constant_id = 1) const bool ACCUM = false;
+
+const uint TM = 128;
+const uint TN = 32;
+const uint TK = 64;
+const uint PAD = TK / 2 + 1;
+
+layout(std430, binding = 0) readonly buffer W { uvec4 w[]; };
+layout(std430, binding = 1) readonly buffer Wd { float16_t wd[]; };
+layout(std430, binding = 2) readonly buffer X { vec4 x4[]; };
+layout(std430, binding = 3) buffer Y { float y[]; };
+layout(std430, binding = 4) readonly buffer C { uint ctl[]; };
+
+layout(push_constant) uniform Push {
+    uint o0;
+    uint o1;
+    uint o2;
+    uint o3;
+    uint x_off;
+    uint y_off;
+    uint n_in;
+    uint n_out;
+    uint x_stride;
+    uint y_stride;
+} p;
+
+shared f16vec2 ws[TM * PAD];
+shared f16vec2 xs[TN * PAD];
+
+uint ubyte(uvec4 v, uint i) {
+    return (v[i / 4] >> (8 * (i % 4))) & 255u;
+}
+
+float sbyte(uvec4 v, uint i) {
+    return float(int(ubyte(v, i) << 24) >> 24);
+}
+
+vec2 scale_min(uvec4 h, uint j) {
+    uvec4 s = uvec4(h.y, h.z, h.w, 0u);
+    if (j < 4) {
+        return vec2(ubyte(s, j) & 63u, ubyte(s, j + 4) & 63u);
+    }
+    uint sc = (ubyte(s, j + 4) & 15u) | ((ubyte(s, j - 4) >> 6) << 4);
+    uint m = (ubyte(s, j + 4) >> 4) | ((ubyte(s, j) >> 6) << 4);
+    return vec2(sc, m);
+}
+
+void dequant(uint row, uint s, uint dst) {
+    float v[32];
+    if (TYPE == 0) {
+        uint q = p.o0 + row * (p.n_in / 16) + s / 16;
+        uvec4 a = w[q];
+        uvec4 b = w[q + 1];
+        float d = float(wd[p.o1 + row * (p.n_in / 32) + s / 32]);
+        [[unroll]] for (uint i = 0; i < 16; i++) {
+            v[i] = d * sbyte(a, i);
+            v[16 + i] = d * sbyte(b, i);
+        }
+    } else if (TYPE == 1) {
+        uint sb = s / 256;
+        uint sub = (s % 256) / 32;
+        uint q = p.o0 + row * (p.n_in / 32) + sb * 8 + (sub / 2) * 2;
+        uvec4 a = w[q];
+        uvec4 b = w[q + 1];
+        uvec4 h = w[p.o1 + row * (p.n_in / 256) + sb];
+        vec2 dm = unpackHalf2x16(h.x);
+        vec2 sm = scale_min(h, sub);
+        float d = dm.x * sm.x;
+        float m = dm.y * sm.y;
+        uint shift = (sub % 2) * 4;
+        [[unroll]] for (uint i = 0; i < 16; i++) {
+            v[i] = d * float((ubyte(a, i) >> shift) & 15u) - m;
+            v[16 + i] = d * float((ubyte(b, i) >> shift) & 15u) - m;
+        }
+    } else {
+        uint rs = row * (p.n_in / 256) + s / 256;
+        uint ph = (s % 256) / 128;
+        uint g = (s % 128) / 32;
+        uint ql = p.o0 + rs * 8 + ph * 4 + (g & 1) * 2;
+        uvec4 a = w[ql];
+        uvec4 b = w[ql + 1];
+        uvec4 ha = w[p.o1 + rs * 4 + ph * 2];
+        uvec4 hb = w[p.o1 + rs * 4 + ph * 2 + 1];
+        uvec4 sc = w[p.o2 + rs];
+        float d = float(wd[p.o3 + rs]);
+        float s0 = d * sbyte(sc, ph * 8 + 2 * g);
+        float s1 = d * sbyte(sc, ph * 8 + 2 * g + 1);
+        uint ns = (g / 2) * 4;
+        uint hs = 2 * g;
+        [[unroll]] for (uint i = 0; i < 16; i++) {
+            uint q0 = ((ubyte(a, i) >> ns) & 15u) | (((ubyte(ha, i) >> hs) & 3u) << 4);
+            uint q1 = ((ubyte(b, i) >> ns) & 15u) | (((ubyte(hb, i) >> hs) & 3u) << 4);
+            v[i] = s0 * (float(q0) - 32.0);
+            v[16 + i] = s1 * (float(q1) - 32.0);
+        }
+    }
+    [[unroll]] for (uint i = 0; i < 16; i++) {
+        ws[dst + i] = f16vec2(v[2 * i], v[2 * i + 1]);
+    }
+}
+
+void main() {
+    uint t = gl_LocalInvocationID.x;
+    uint row0 = gl_WorkGroupID.x * TM;
+    uint n_tok = min(ctl[2], TN);
+    uint rg = t % 32;
+    uint tg = t / 32;
+
+    float acc[16];
+    [[unroll]] for (uint i = 0; i < 16; i++) {
+        acc[i] = 0.0;
+    }
+
+    uint lr = t / 2;
+    uint hk = t % 2;
+    uint grow = min(row0 + lr, p.n_out - 1);
+    uint xt = t / 8;
+    uint xk = (t % 8) * 8;
+
+    for (uint k0 = 0; k0 < p.n_in; k0 += TK) {
+        dequant(grow, k0 + hk * 32, lr * PAD + hk * 16);
+        uint xb = (p.x_off + xt * p.x_stride + k0 + xk) / 4;
+        vec4 xa = x4[xb];
+        vec4 xc = x4[xb + 1];
+        xs[xt * PAD + xk / 2] = f16vec2(xa.xy);
+        xs[xt * PAD + xk / 2 + 1] = f16vec2(xa.zw);
+        xs[xt * PAD + xk / 2 + 2] = f16vec2(xc.xy);
+        xs[xt * PAD + xk / 2 + 3] = f16vec2(xc.zw);
+        memoryBarrierShared();
+        barrier();
+
+        f16vec2 part[16];
+        [[unroll]] for (uint i = 0; i < 16; i++) {
+            part[i] = f16vec2(0.0);
+        }
+        [[unroll]] for (uint kk = 0; kk < TK / 2; kk++) {
+            f16vec2 xv[4];
+            [[unroll]] for (uint j = 0; j < 4; j++) {
+                xv[j] = xs[(4 * tg + j) * PAD + kk];
+            }
+            [[unroll]] for (uint r = 0; r < 4; r++) {
+                f16vec2 wv = ws[(rg + 32 * r) * PAD + kk];
+                [[unroll]] for (uint j = 0; j < 4; j++) {
+                    part[r * 4 + j] = fma(wv, xv[j], part[r * 4 + j]);
+                }
+            }
+        }
+        [[unroll]] for (uint i = 0; i < 16; i++) {
+            acc[i] += float(part[i].x) + float(part[i].y);
+        }
+        barrier();
+    }
+
+    [[unroll]] for (uint r = 0; r < 4; r++) {
+        [[unroll]] for (uint j = 0; j < 4; j++) {
+            uint row = row0 + rg + 32 * r;
+            uint tok = 4 * tg + j;
+            if (row < p.n_out && tok < n_tok) {
+                uint o = p.y_off + tok * p.y_stride + row;
+                y[o] = ACCUM ? y[o] + acc[r * 4 + j] : acc[r * 4 + j];
+            }
+        }
+    }
+}

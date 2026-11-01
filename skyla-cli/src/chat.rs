@@ -85,10 +85,7 @@ pub fn run(path: &Path, mut opts: Options) -> Result<()> {
         first = false;
 
         let t = Instant::now();
-        let mut logits = Vec::new();
-        for &id in &ids {
-            logits = engine.step(id)?.to_vec();
-        }
+        let mut logits = engine.prefill(&ids)?.to_vec();
         let prefill = t.elapsed();
 
         let t = Instant::now();

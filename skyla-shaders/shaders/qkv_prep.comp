@@ -23,25 +23,34 @@ layout(push_constant) uniform Push {
     float eps;
     uint rope_off;
     float mscale;
+    uint q_stride;
+    uint kv_stride;
 } p;
 
 void main() {
     uint h = gl_WorkGroupID.x;
+    uint tok = gl_WorkGroupID.y;
+    if (tok >= ctl[2]) {
+        return;
+    }
     uint t = gl_LocalInvocationID.x;
-    uint pos = ctl[1];
+    uint pos = ctl[1] + tok;
     uint kv_dim = p.n_kv * 128;
+    uint q_base = p.q_off + tok * p.q_stride;
+    uint k_base = p.k_off + tok * p.kv_stride;
+    uint v_base = p.v_off + tok * p.kv_stride;
 
     if (h >= p.n_head + p.n_kv) {
         uint vh = h - p.n_head - p.n_kv;
         uint dst = p.vc_off + pos * kv_dim + vh * 128;
-        kv[dst + t] = float16_t(a[p.v_off + vh * 128 + t]);
-        kv[dst + t + 64] = float16_t(a[p.v_off + vh * 128 + t + 64]);
+        kv[dst + t] = float16_t(a[v_base + vh * 128 + t]);
+        kv[dst + t + 64] = float16_t(a[v_base + vh * 128 + t + 64]);
         return;
     }
 
     bool is_q = h < p.n_head;
     uint head = is_q ? h : h - p.n_head;
-    uint src = (is_q ? p.q_off : p.k_off) + head * 128;
+    uint src = (is_q ? q_base : k_base) + head * 128;
     uint nw = is_q ? p.qn_off : p.kn_off;
 
     float x0 = a[src + t];

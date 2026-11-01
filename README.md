@@ -10,8 +10,14 @@ it at a consumer laptop instead of a datacenter GPU. ROCm does not support this 
 Skyla's kernels are Vulkan compute shaders, specialized at pipeline-creation time and
 tuned by measurement on the target device.
 
-> Status: **M0–M3 done**: DeepSeek-R1-0528-Qwen3-8B (Q4_K_M) decodes at **6.8 tok/s** on
-> the iGPU, 1.7× llama.cpp's 4.0 tok/s, checked token by token against a CPU reference.
+> Status: **M0–M3, M5 (chat) and M6 (prefill) done.** DeepSeek-R1-0528-Qwen3-8B (Q4_K_M)
+> on the iGPU, checked token by token against a CPU reference:
+>
+> | | Skyla | llama.cpp b12032 (Vulkan) |
+> |---|---:|---:|
+> | Decode | **6.8 tok/s** | 4.0 tok/s |
+> | Prefill | **60 tok/s** | 35.6 tok/s |
+>
 > See [docs/roadmap.md](docs/roadmap.md).
 
 Measured on the target: the iGPU streams weights at about 35 GB/s, the CPU at about

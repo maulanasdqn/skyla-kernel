@@ -19,23 +19,31 @@ layout(push_constant) uniform Push {
     uint n_kv;
     uint n_split;
     float scale;
+    uint q_stride;
+    uint part_stride;
 } p;
 
 void main() {
     uint kvh = gl_WorkGroupID.x;
     uint split = gl_WorkGroupID.y;
+    uint tok = gl_WorkGroupID.z;
+    uint n_pos = ctl[1] + tok + 1;
+    if (tok >= ctl[2] || split * CHUNK >= n_pos) {
+        return;
+    }
     uint lane = gl_LocalInvocationID.x;
-    uint n_pos = ctl[1] + 1;
     uint row = p.n_kv * 64;
     uint k_base = p.kc_off / 2 + kvh * 64 + lane;
     uint v_base = p.vc_off / 2 + kvh * 64 + lane;
+    uint q_base = p.q_off + tok * p.q_stride;
+    uint part_base = p.part_off + tok * p.part_stride;
 
     vec2 q[N_REP];
     float m[N_REP];
     float l[N_REP];
     vec2 acc[N_REP];
     for (uint j = 0; j < N_REP; j++) {
-        uint qb = p.q_off + (kvh * N_REP + j) * 128 + lane * 2;
+        uint qb = q_base + (kvh * N_REP + j) * 128 + lane * 2;
         q[j] = vec2(a[qb], a[qb + 1]) * p.scale;
         m[j] = -1e30;
         l[j] = 0.0;
@@ -58,7 +66,7 @@ void main() {
     }
 
     for (uint j = 0; j < N_REP; j++) {
-        uint base = p.part_off + ((kvh * N_REP + j) * p.n_split + split) * 130;
+        uint base = part_base + ((kvh * N_REP + j) * p.n_split + split) * 130;
         if (lane == 0) {
             a[base] = m[j];
             a[base + 1] = l[j];

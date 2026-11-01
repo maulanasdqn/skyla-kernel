@@ -1,4 +1,4 @@
-use crate::arena::Arena;
+use crate::arena::{Arena, BATCH};
 use crate::graph;
 use crate::kernels::Kernels;
 use crate::weights::Weights;
@@ -8,7 +8,8 @@ use skyla_ref::Config;
 use skyla_vk::{Context, Recording};
 
 pub struct Engine<'g> {
-    recording: Recording,
+    decode: Recording,
+    prefill: Recording,
     _kernels: Kernels,
     arena: Arena,
     weights: Weights,
@@ -38,9 +39,11 @@ impl<'g> Engine<'g> {
         let arena = Arena::new(&ctx, &config, max_ctx)?;
         let n_rep = (config.n_head / config.n_head_kv) as u32;
         let kernels = Kernels::new(&ctx, &weights.buffers, &arena.buffer, &arena.kv, n_rep)?;
-        let recording = graph::record(&ctx, &kernels, &weights, &arena, &config, profile)?;
+        let decode = graph::record(&ctx, &kernels, &weights, &arena, &config, false, profile)?;
+        let prefill = graph::record(&ctx, &kernels, &weights, &arena, &config, true, profile)?;
         Ok(Self {
-            recording,
+            decode,
+            prefill,
             _kernels: kernels,
             arena,
             weights,
@@ -67,34 +70,40 @@ impl<'g> Engine<'g> {
         self.pos = 0;
     }
 
-    pub fn last_step_profile(&self) -> Result<Vec<(&'static str, f64)>> {
-        self.ctx.marks(&self.recording)
+    pub fn last_step_profile(&self, prefill: bool) -> Result<Vec<(&'static str, f64)>> {
+        self.ctx.marks(if prefill { &self.prefill } else { &self.decode })
     }
 
-    pub fn step(&mut self, token: u32) -> Result<&[f32]> {
+    fn load(&mut self, tokens: &[u32]) -> Result<()> {
         let max = self.arena.max_ctx;
-        ensure!(self.pos < max, "context full ({max} tokens)");
+        ensure!(self.pos + tokens.len() as u32 <= max, "context full ({max} tokens)");
         let (dtype, data, row) = self.embd;
-        let x = self.arena.x as usize;
+        let n = self.config.n_embd;
+        let (x, stride) = (self.arena.x as usize, self.arena.s_embd as usize);
         let arena = self
             .arena
             .buffer
             .as_f32_mut()
             .ok_or_else(|| anyhow!("arena is not mapped"))?;
-        let src = data
-            .get(token as usize * row..(token as usize + 1) * row)
-            .ok_or_else(|| anyhow!("token {token} is outside the vocabulary"))?;
-        dequantize(dtype, src, &mut arena[x..x + self.config.n_embd])?;
+        for (t, &token) in tokens.iter().enumerate() {
+            let src = data
+                .get(token as usize * row..(token as usize + 1) * row)
+                .ok_or_else(|| anyhow!("token {token} is outside the vocabulary"))?;
+            let dst = x + t * stride;
+            dequantize(dtype, src, &mut arena[dst..dst + n])?;
+        }
         let ctl = self
             .arena
             .buffer
             .as_u32_mut()
             .ok_or_else(|| anyhow!("arena is not mapped"))?;
-        ctl[0] = token;
+        ctl[0] = tokens[0];
         ctl[1] = self.pos;
+        ctl[2] = tokens.len() as u32;
+        Ok(())
+    }
 
-        self.ctx.replay(&self.recording)?;
-        self.pos += 1;
+    fn logits(&self) -> Result<&[f32]> {
         let all = self
             .arena
             .buffer
@@ -102,5 +111,22 @@ impl<'g> Engine<'g> {
             .ok_or_else(|| anyhow!("arena is not mapped"))?;
         let start = self.arena.logits as usize;
         Ok(&all[start..start + self.config.n_vocab])
+    }
+
+    pub fn step(&mut self, token: u32) -> Result<&[f32]> {
+        self.load(&[token])?;
+        self.ctx.replay(&self.decode)?;
+        self.pos += 1;
+        self.logits()
+    }
+
+    pub fn prefill(&mut self, tokens: &[u32]) -> Result<&[f32]> {
+        ensure!(!tokens.is_empty(), "prefill needs at least one token");
+        for chunk in tokens.chunks(BATCH) {
+            self.load(chunk)?;
+            self.ctx.replay(&self.prefill)?;
+            self.pos += chunk.len() as u32;
+        }
+        self.logits()
     }
 }
