@@ -1,5 +1,6 @@
 mod app;
 mod components;
+mod markdown;
 mod socket;
 mod state;
 
