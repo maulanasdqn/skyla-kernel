@@ -1,0 +1,25 @@
+#version 450
+// Streaming-read roofline probe: every invocation reads a grid-strided slice of `src`.
+// The conditional store keeps the loads alive without adding write traffic.
+
+layout(local_size_x_id = 0) in;
+
+layout(std430, binding = 0) readonly buffer Src { uvec4 src[]; };
+layout(std430, binding = 1) writeonly buffer Dst { uint dst[]; };
+
+layout(push_constant) uniform Push { uint n_vec4; } pc;
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    uint stride = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+
+    uvec4 acc = uvec4(0);
+    for (uint i = gid; i < pc.n_vec4; i += stride) {
+        acc ^= src[i];
+    }
+
+    uint r = acc.x ^ acc.y ^ acc.z ^ acc.w;
+    if (r == 0x9e3779b9u) {
+        dst[gid] = r;
+    }
+}

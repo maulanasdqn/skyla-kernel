@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/maulanasdqn/skyla-kernel"
+
+[workspace.dependencies]
+anyhow = "1"
+ash = "0.38"
+clap = { version = "4.5", features = ["derive"] }
+half = "2"
+memmap2 = "0.9"
+skyla-gguf = { path = "crates/skyla-gguf" }
+skyla-shaders = { path = "crates/skyla-shaders" }
+skyla-vk = { path = "crates/skyla-vk" }
+
+[profile.release]
+debug = 1

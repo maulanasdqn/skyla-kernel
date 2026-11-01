@@ -1,0 +1,7 @@
+[package]
+name = "skyla-shaders"
+description = "GLSL compute kernels for Skyla, compiled to SPIR-V at build time"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"

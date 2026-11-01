@@ -1,0 +1,6 @@
+/target
+/build
+/engines
+*.spv
+*.gguf
+*.safetensors

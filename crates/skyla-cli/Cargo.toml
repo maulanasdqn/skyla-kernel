@@ -1,0 +1,16 @@
+[package]
+name = "skyla-cli"
+description = "Skyla command line: device probe, benchmarks, compile and run"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "skyla"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+skyla-shaders.workspace = true
+skyla-vk.workspace = true
