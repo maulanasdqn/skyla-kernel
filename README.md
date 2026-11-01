@@ -1,10 +1,11 @@
 # Skyla Kernel
 
-**Ahead-of-time LLM inference kernels for one exact machine: an AMD Vega 8 iGPU.**
+**Ahead-of-time LLM inference kernels for laptop GPUs: an AMD Vega 8 iGPU and the Apple M5.**
 
 Skyla runs DeepSeek-R1-0528-Qwen3-8B on a Ryzen 7 7730U laptop with no discrete GPU,
 **1.9× faster than llama.cpp at generation and 1.7× faster at prompt processing** on the
-same hardware, and checks every kernel against a plain CPU reference. It ships a terminal
+same hardware, and checks every kernel against a plain CPU reference. The same code runs
+on an Apple M5 MacBook through MoltenVK at **23 tok/s** on the 8B model. It ships a terminal
 chat and a browser chat UI (Rust/WebAssembly) that can switch between models at runtime.
 
 It applies the idea behind [Netra Kernel](https://github.com/NetraRuntime/netra-kernel),
@@ -14,6 +15,8 @@ Vulkan compute shaders, specialized at pipeline creation and chosen by measureme
 target device.
 
 ## Results
+
+### ASUS Vivobook (AMD Vega 8)
 
 DeepSeek-R1-0528-Qwen3-8B (Josiefied abliterated v1, Q4_K_M, 4.68 GiB), batch size 1,
 Windows 11, AMD driver 23.19, against llama.cpp b12032 on the same laptop:
@@ -32,41 +35,51 @@ Other models on the same laptop (Skyla, 256-token prompt):
 | DeepSeek-R1-0528-Qwen3-8B (Q4_K_M) | 4.7 GB | 7.6 tok/s | 60 tok/s | Reasoning model; writes a `<think>` section first |
 | Qwen3-0.6B (Q8_0) | 0.6 GB | 55 tok/s | 686 tok/s | Development model (llama.cpp: 44.5 / 436) |
 
-### Apple M5
-
-The same kernels run on an Apple M5 (10-core GPU, 16 GB unified memory) through MoltenVK,
-using 32-lane variants of the subgroup kernels. With the tactics tuned for Vega:
-
-| | R1-8B Q4_K_M | Qwen3-0.6B Q8_0 |
-|---|---:|---:|
-| Generation (tok/s) | 19–24 | 117 |
-| Prompt processing, 473 tokens (tok/s) | 100–114 | 1098 |
-| Worst logit error, default `--kv v8` | 0.13 | 0.13 |
-
-`skyla bench-bw` measures 134 GB/s on the GPU, so generation on the 8B model reaches
-roughly 70–90% of the roofline; the Vega tactics have not been re-tuned for this GPU.
-
 Generation is bound by memory bandwidth. The weight kernels read at 36–38 GB/s against a
 measured ~40 GB/s roofline, so Skyla runs at about 95% of what this memory system can
 deliver for a 5 GB model.
 
-## Target machine
+### Apple M5
 
-| | |
-|---|---|
-| Laptop | ASUS Vivobook M1405YA |
-| CPU | Ryzen 7 7730U (Zen 3, 8 cores, AVX2) |
-| GPU | Radeon Vega 8 iGPU (`gfx90c`, 8 CU, wave64, 32 KiB LDS), Vulkan 1.3 |
-| Memory | 40 GB DDR4-3200 shared by CPU and GPU (8 + 32 GB modules) |
+macOS on an Apple M5 (10-core GPU, 16 GB unified memory), MoltenVK 1.4, the same
+256-token prompt, median of three runs:
 
-The GPU has FP16 arithmetic and 8/16-bit storage, but no int8 dot product and no matrix
-cores. Every design choice below follows from that and from the shared DDR4.
+| Model | Size | Generation | Prompt processing | vs. Vivobook |
+|---|---:|---:|---:|---|
+| Qwen3-4B-Instruct-2507 abliterated (Q4_K_M) | 2.5 GB | 38.4 tok/s | 275 tok/s | 3.2× / 2.3× |
+| DeepSeek-R1-0528-Qwen3-8B (Q4_K_M) | 4.7 GB | 23.1 tok/s | 121 tok/s | 3.0× / 2.0× |
+| Qwen3-0.6B (Q8_0) | 0.6 GB | 105 tok/s | 1196 tok/s | 1.9× / 1.7× |
+
+`skyla bench-bw` measures 134 GB/s of GPU read bandwidth, so the 8B model generates at
+about 85% of the roofline (5.0 GB × 23.1 tok/s ≈ 116 GB/s). These numbers use the
+tactics tuned on the Vega; a sweep of the K-quant matvec tactics on the M5 was within
+run-to-run noise, so they have not been re-tuned yet. With the default `--kv v8` the
+engine agrees with the CPU reference to a worst logit error of 0.13 on R1-8B and 0.06 on
+the 4B model; the only differing top-1 tokens were near-ties in probability.
+
+## Target machines
+
+| | ASUS Vivobook M1405YA (primary) | MacBook with Apple M5 |
+|---|---|---|
+| OS | Windows 11, AMD driver 23.19 | macOS 27, MoltenVK 1.4 (Vulkan on Metal) |
+| CPU | Ryzen 7 7730U (Zen 3, 8 cores, AVX2) | Apple M5 |
+| GPU | Radeon Vega 8 iGPU (`gfx90c`, 8 CU, wave64, 32 KiB LDS) | Apple M5 10-core GPU (32-lane SIMD groups, 32 KiB threadgroup memory) |
+| Memory | 40 GB DDR4-3200 shared by CPU and GPU (8 + 32 GB modules) | 16 GB unified memory, 134 GB/s measured GPU read |
+| Largest buffer | ~2 GiB allocation | 4 GiB storage-buffer range |
+
+The Vega has FP16 arithmetic and 8/16-bit storage, but no int8 dot product and no matrix
+cores. Every design choice below follows from that and from the shared DDR4. The kernels
+were designed and tuned on the Vega; the M5 runs the same kernels with a 32-lane variant
+of every kernel that reduces across a subgroup, chosen at startup from the device's
+subgroup size, so one build serves both machines.
 
 ## Quick start
 
 ### Requirements
 
-- Windows 11 with an AMD Vulkan 1.3 driver, or macOS on Apple silicon with MoltenVK
+Windows (Vivobook):
+
+- Windows 11 with an AMD Vulkan 1.3 driver
 - [Rust](https://rustup.rs/) (stable, MSVC toolchain) and the Visual Studio C++ Build Tools
 - [Vulkan SDK](https://vulkan.lunarg.com/) (provides `glslc` and the validation layer)
 
@@ -75,11 +88,16 @@ winget install Rustlang.Rustup KhronosGroup.VulkanSDK
 winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 ```
 
-On macOS:
+macOS (Apple silicon, checked on the M5):
+
+- [Rust](https://rustup.rs/) (stable)
+- MoltenVK, the Vulkan loader and `glslc` from Homebrew
 
 ```sh
 brew install molten-vk vulkan-loader shaderc
 ```
+
+`skyla probe` should report `Apple M5` with subgroup size 32.
 
 ### Build
 
@@ -89,8 +107,9 @@ cd skyla-kernel
 cargo build --release
 ```
 
-`build.rs` compiles every shader in `skyla-shaders/shaders` with `glslc`; set `GLSLC` if
-it is not found through `VULKAN_SDK`.
+The build is the same on both machines. `build.rs` compiles every shader in
+`skyla-shaders/shaders` with `glslc`, and the subgroup kernels twice (64 and 32 lanes);
+set `GLSLC` if it is not found through `VULKAN_SDK` or `PATH`.
 
 ### Get models
 
@@ -185,7 +204,7 @@ also needs `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`.
 GGUF checkpoint (memory-mapped)
       │
       ▼
-load      weights repacked into kernel-native layouts across ≤2 GiB buffers
+load      weights repacked into kernel-native layouts across buffers sized to the device limit
           activations planned at fixed offsets in one arena
           RoPE/YaRN frequencies and norm weights precomputed into tables
       │
@@ -201,7 +220,7 @@ replay    per token: dequantize the embedding row on the CPU, replay, read logit
 
 | Kernel | Design |
 |---|---|
-| Matrix-vector (decode) | One wave64 per group of rows; each lane streams 16 bytes of weights per step and keeps a slice of the input in registers across rows. Per-format tactics: Q4_K/Q6_K 2 waves × 4 rows, Q8_0 4 waves × 2 rows |
+| Matrix-vector (decode) | One subgroup (wave64 on the Vega, 32 lanes on the M5) per group of rows; each lane streams 16 bytes of weights per step and keeps a slice of the input in registers across rows. Per-format tactics: Q4_K/Q6_K 2 waves × 4 rows, Q8_0 4 waves × 2 rows |
 | Matrix-matrix (prefill) | 128 rows × 32 tokens per workgroup; each 64-wide K step dequantizes once into LDS as f16; 4×4 micro-tiles accumulate with packed f16 FMA inside a step and f32 across steps |
 | Attention | Split-K decode attention (64-position chunks) with online softmax; one workgroup serves all query heads of a KV head (GQA); causal per token in prefill |
 | QK-norm + RoPE | Fused per head, writes the KV cache, quantizes keys/values in registers when int8 |
@@ -240,7 +259,9 @@ token and the largest logit difference at every step, with the Vulkan validation
 - The CPU reference matches llama.cpp's Vulkan backend on R1-8B to 3–4 decimals of
   probability. llama.cpp's CPU backend disagrees with both on this model.
 - The GPU engine matches the reference on every greedy token in the recorded checks;
-  the worst logit difference with the default settings is under 0.2.
+  the worst logit difference with the default settings is under 0.2. On the M5 the
+  32-lane kernels give 0.13 on R1-8B and Qwen3-0.6B, and runs clean under the
+  validation layer; the only top-1 differences seen were near-ties in probability.
 - The tokenizer produces ids identical to `llama-tokenize` on emoji, CJK, code, CRLF,
   contractions, numbers and full chat prompts.
 
@@ -258,6 +279,11 @@ token and the largest logit difference at every step, with the Vulkan validation
   `mscale` 1.139), which changes outputs from the first token.
 - **`subgroupClusteredMax(x, 32)` is broken on AMD driver 23.19** for the upper half of a
   64-lane wave; Skyla uses an explicit `subgroupShuffleXor` butterfly instead.
+- **wave64 was baked into every reduction.** On the M5's 32-lane SIMD groups each
+  `subgroupAdd` summed half a row and the first run disagreed on every token (logit error
+  26); the subgroup kernels now take the lane count as a build-time variant.
+- **MoltenVK cannot timestamp around a single dispatch.** `bench-bw` first reported
+  6500 GB/s on the M5; it now times consecutive bottom-of-pipe stamps (134 GB/s).
 
 ## Repository layout
 
@@ -289,9 +315,9 @@ which also holds every measurement behind the numbers above.
   32-token chunk reads the KV cache separately.
 - Earlier turns keep their `<think>` text in context, unlike the reference chat template,
   to avoid re-processing them.
-- Tuned for one laptop. It runs on other Vulkan 1.3 GPUs with FP16, 8/16-bit storage and
-  a subgroup size of 32 or 64 (checked on the Vega 8 and on an Apple M5), but its tactics
-  were chosen on the Vega.
+- Tuned on one laptop. It runs on Vulkan 1.3 GPUs with FP16, 8/16-bit storage and a
+  subgroup size of 32 or 64 (checked on the Vega 8 and the Apple M5), but its tactics were
+  chosen on the Vega; the M5 has not been re-tuned.
 
 ## Roadmap
 
