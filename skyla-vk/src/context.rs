@@ -25,6 +25,26 @@ pub struct Context {
     pub(crate) cmd_pool: vk::CommandPool,
 }
 
+const LOADER_DIRS: [&str; 3] = ["/opt/homebrew/lib", "/usr/local/lib", "/usr/lib"];
+const LOADER_NAMES: [&str; 2] = ["libvulkan.1.dylib", "libMoltenVK.dylib"];
+
+fn load_entry() -> Result<ash::Entry> {
+    if let Ok(entry) = unsafe { ash::Entry::load() } {
+        return Ok(entry);
+    }
+    let sdk = std::env::var("VULKAN_SDK").map(|s| format!("{s}/lib")).ok();
+    let dirs: Vec<&str> = sdk.as_deref().into_iter().chain(LOADER_DIRS).collect();
+    dirs.iter()
+        .flat_map(|d| LOADER_NAMES.map(|n| std::path::Path::new(d).join(n)))
+        .filter(|p| p.exists())
+        .find_map(|p| unsafe { ash::Entry::load_from(p) }.ok())
+        .ok_or_else(|| anyhow!("no Vulkan loader found (install the Vulkan SDK, or MoltenVK on macOS)"))
+}
+
+fn has_extension(available: &[vk::ExtensionProperties], name: &CStr) -> bool {
+    available.iter().any(|e| e.extension_name_as_c_str() == Ok(name))
+}
+
 fn pick_device(instance: &ash::Instance) -> Result<vk::PhysicalDevice> {
     let devices = unsafe { instance.enumerate_physical_devices() }?;
     if let Ok(i) = std::env::var("SKYLA_DEVICE") {
@@ -63,13 +83,21 @@ fn query_caps(instance: &ash::Instance, physical: vk::PhysicalDevice) -> Result<
 
 impl Context {
     pub fn new() -> Result<Self> {
-        let entry = unsafe { ash::Entry::load() }.context("loading vulkan-1.dll")?;
+        let entry = load_entry()?;
         let app = vk::ApplicationInfo::default()
             .application_name(c"skyla")
             .engine_name(c"skyla-kernel")
             .api_version(vk::API_VERSION_1_3);
         let layers = [c"VK_LAYER_KHRONOS_validation".as_ptr()];
+        let instance_exts = unsafe { entry.enumerate_instance_extension_properties(None) }?;
+        let portability = has_extension(&instance_exts, vk::KHR_PORTABILITY_ENUMERATION_NAME);
+        let enabled_exts = [vk::KHR_PORTABILITY_ENUMERATION_NAME.as_ptr()];
         let mut create = vk::InstanceCreateInfo::default().application_info(&app);
+        if portability {
+            create = create
+                .enabled_extension_names(&enabled_exts)
+                .flags(vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR);
+        }
         if std::env::var("SKYLA_VALIDATION").is_ok_and(|v| v == "1") {
             create = create.enabled_layer_names(&layers);
         }
@@ -99,8 +127,15 @@ impl Context {
         let queue_infos = [vk::DeviceQueueCreateInfo::default()
             .queue_family_index(queue_family)
             .queue_priorities(&priorities)];
+        let device_exts = unsafe { instance.enumerate_device_extension_properties(physical) }?;
+        let subset = [vk::KHR_PORTABILITY_SUBSET_NAME.as_ptr()];
+        let subset = match has_extension(&device_exts, vk::KHR_PORTABILITY_SUBSET_NAME) {
+            true => &subset[..],
+            false => &[],
+        };
         let device_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_infos)
+            .enabled_extension_names(subset)
             .push_next(&mut en11)
             .push_next(&mut en12)
             .push_next(&mut en13);

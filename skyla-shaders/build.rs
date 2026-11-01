@@ -7,9 +7,13 @@ fn glslc() -> PathBuf {
         return p.into();
     }
     if let Ok(sdk) = env::var("VULKAN_SDK") {
-        let p = Path::new(&sdk).join("Bin").join("glslc.exe");
-        if p.exists() {
-            return p;
+        for p in [
+            Path::new(&sdk).join("Bin").join("glslc.exe"),
+            Path::new(&sdk).join("bin").join("glslc"),
+        ] {
+            if p.exists() {
+                return p;
+            }
         }
     }
     "glslc".into()
@@ -33,21 +37,28 @@ fn main() {
     let mut consts = String::new();
     for src in &shaders {
         let stem = src.file_stem().unwrap().to_str().unwrap();
-        let spv = out.join(format!("{stem}.spv"));
-        let status = Command::new(&glslc)
-            .args(["--target-env=vulkan1.3", "-O", "-I"])
-            .arg(dir)
-            .arg(src)
-            .arg("-o")
-            .arg(&spv)
-            .status()
-            .unwrap_or_else(|e| panic!("running {}: {e} (install the Vulkan SDK or set GLSLC)", glslc.display()));
-        assert!(status.success(), "glslc failed on {}", src.display());
-        consts.push_str(&format!(
-            "pub const {}: &[u8] = include_bytes!({:?});\n",
-            stem.to_uppercase(),
-            spv.display().to_string()
-        ));
+        let variants: &[(&str, &str)] = match fs::read_to_string(src).unwrap().contains("LANES") {
+            true => &[("", "-DLANES=64"), ("_W32", "-DLANES=32")],
+            false => &[("", "")],
+        };
+        for (suffix, define) in variants {
+            let name = format!("{}{suffix}", stem.to_uppercase());
+            let spv = out.join(format!("{name}.spv"));
+            let status = Command::new(&glslc)
+                .args(["--target-env=vulkan1.3", "-O", "-I"])
+                .arg(dir)
+                .args(Some(define).filter(|d| !d.is_empty()))
+                .arg(src)
+                .arg("-o")
+                .arg(&spv)
+                .status()
+                .unwrap_or_else(|e| panic!("running {}: {e} (install the Vulkan SDK or set GLSLC)", glslc.display()));
+            assert!(status.success(), "glslc failed on {}", src.display());
+            consts.push_str(&format!(
+                "pub const {name}: &[u8] = include_bytes!({:?});\n",
+                spv.display().to_string()
+            ));
+        }
     }
     fs::write(out.join("shaders.rs"), consts).unwrap();
 }

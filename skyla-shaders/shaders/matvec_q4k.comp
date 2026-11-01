@@ -1,7 +1,7 @@
 #version 450
 #extension GL_KHR_shader_subgroup_arithmetic : require
 
-layout(local_size_x = 64, local_size_y_id = 0) in;
+layout(local_size_x = LANES, local_size_y_id = 0) in;
 layout(constant_id = 1) const bool ACCUM = false;
 layout(constant_id = 2) const uint ROWS = 2;
 
@@ -54,7 +54,7 @@ void main() {
         acc[r] = 0.0;
     }
 
-    for (uint u = lane; u < units; u += 64) {
+    for (uint u = lane; u < units; u += LANES) {
         uint sb = u / 8;
         uint j = (u % 8) / 2;
         uint xb = (p.x_off + sb * 256 + j * 64 + (u % 2) * 16) / 4;

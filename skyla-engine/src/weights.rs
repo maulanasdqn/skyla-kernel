@@ -38,7 +38,10 @@ pub struct Weights {
 
 impl Weights {
     pub fn load(ctx: &Context, g: &Gguf, c: &Config) -> Result<Self> {
-        let mut p = Planner::new(g, ctx.max_allocation_size as usize);
+        let cap = ctx
+            .max_allocation_size
+            .min(ctx.props.limits.max_storage_buffer_range as u64);
+        let mut p = Planner::new(g, cap as usize);
         let rope = p.table(c.rope_freqs.clone());
         let out_norm = p.norm("output_norm.weight")?;
         let mut norms = Vec::with_capacity(c.n_layer);

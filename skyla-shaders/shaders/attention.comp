@@ -5,11 +5,19 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
 
-layout(local_size_x = 64) in;
+layout(local_size_x = LANES) in;
 layout(constant_id = 0) const uint N_REP = 2;
 layout(constant_id = 1) const uint CHUNK = 64;
 layout(constant_id = 2) const bool K_Q8 = false;
 layout(constant_id = 3) const bool V_Q8 = false;
+
+const uint E = 128 / LANES;
+
+#if LANES == 64
+#define VEC vec2
+#else
+#define VEC vec4
+#endif
 
 layout(std430, binding = 0) buffer A { float a[]; };
 layout(std430, binding = 1) readonly buffer C { uint ctl[]; };
@@ -31,14 +39,22 @@ layout(push_constant) uniform Push {
     uint vs_off;
 } p;
 
-vec2 load(bool q8, uint cache, uint scales, uint i, uint kvh, uint lane) {
-    uint row = p.n_kv * 64;
+VEC load(bool q8, uint cache, uint scales, uint i, uint kvh, uint lane) {
+    uint at = i * p.n_kv * 64 + kvh * 64 + lane * (E / 2);
+    VEC v;
     if (!q8) {
-        return vec2(kv[cache / 2 + i * row + kvh * 64 + lane]);
+        for (uint e = 0; e < E / 2; e++) {
+            vec2 pair = vec2(kv[cache / 2 + at + e]);
+            v[2 * e] = pair.x;
+            v[2 * e + 1] = pair.y;
+        }
+        return v;
     }
-    float s = float(kvs[scales + i * (p.n_kv * 4) + kvh * 4 + lane / 16]);
-    uint b = cache + (i * row + kvh * 64 + lane) * 2;
-    return vec2(float(kv8[b]), float(kv8[b + 1])) * s;
+    float s = float(kvs[scales + i * (p.n_kv * 4) + kvh * 4 + lane * E / 32]);
+    for (uint e = 0; e < E; e++) {
+        v[e] = float(kv8[cache + at * 2 + e]);
+    }
+    return v * s;
 }
 
 void main() {
@@ -53,22 +69,24 @@ void main() {
     uint q_base = p.q_off + tok * p.q_stride;
     uint part_base = p.part_off + tok * p.part_stride;
 
-    vec2 q[N_REP];
+    VEC q[N_REP];
     float m[N_REP];
     float l[N_REP];
-    vec2 acc[N_REP];
+    VEC acc[N_REP];
     for (uint j = 0; j < N_REP; j++) {
-        uint qb = q_base + (kvh * N_REP + j) * 128 + lane * 2;
-        q[j] = vec2(a[qb], a[qb + 1]) * p.scale;
+        uint qb = q_base + (kvh * N_REP + j) * 128 + lane * E;
+        for (uint e = 0; e < E; e++) {
+            q[j][e] = a[qb + e] * p.scale;
+        }
         m[j] = -1e30;
         l[j] = 0.0;
-        acc[j] = vec2(0.0);
+        acc[j] = VEC(0.0);
     }
 
     uint end = min(split * CHUNK + CHUNK, n_pos);
     for (uint i = split * CHUNK; i < end; i++) {
-        vec2 k = load(K_Q8, p.kc_off, p.ks_off, i, kvh, lane);
-        vec2 v = load(V_Q8, p.vc_off, p.vs_off, i, kvh, lane);
+        VEC k = load(K_Q8, p.kc_off, p.ks_off, i, kvh, lane);
+        VEC v = load(V_Q8, p.vc_off, p.vs_off, i, kvh, lane);
         for (uint j = 0; j < N_REP; j++) {
             float s = subgroupAdd(dot(q[j], k));
             float mn = max(m[j], s);
@@ -86,7 +104,8 @@ void main() {
             a[base] = m[j];
             a[base + 1] = l[j];
         }
-        a[base + 2 + lane * 2] = acc[j].x;
-        a[base + 3 + lane * 2] = acc[j].y;
+        for (uint e = 0; e < E; e++) {
+            a[base + 2 + lane * E + e] = acc[j][e];
+        }
     }
 }

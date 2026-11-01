@@ -1,6 +1,6 @@
 use crate::arena::ATTENTION_CHUNK;
 use crate::kv::KvPrecision;
-use anyhow::Result;
+use anyhow::{bail, Result};
 use skyla_gguf::DType;
 use skyla_vk::{Buffer, Context, Pipeline};
 
@@ -66,6 +66,14 @@ fn matvec(ctx: &Context, kind: Kind, weights: &[Buffer], a: &Buffer) -> Result<M
     })
 }
 
+fn wave32(ctx: &Context) -> Result<bool> {
+    match ctx.subgroup_size {
+        64 => Ok(false),
+        32 => Ok(true),
+        n => bail!("no kernels for subgroup size {n} (need 32 or 64)"),
+    }
+}
+
 impl Kernels {
     pub fn new(
         ctx: &Context,
@@ -76,6 +84,8 @@ impl Kernels {
         precision: KvPrecision,
     ) -> Result<Self> {
         let (k8, v8) = (precision.keys_q8() as u32, precision.values_q8() as u32);
+        let w32 = wave32(ctx)?;
+        let pick = |w64: &'static [u8], w32_spirv: &'static [u8]| if w32 { w32_spirv } else { w64 };
         let build = |spirv: &[u8], bufs: &[&Buffer], push: u32, spec: &[u32]| -> Result<Pipeline> {
             let p = ctx.create_pipeline(spirv, bufs.len() as u32, push, spec)?;
             p.bind_buffers(bufs);
@@ -89,22 +99,30 @@ impl Kernels {
             matmul_type,
             tactic,
         };
+        let decode = |w64, w32, dual_view, push, tactic| {
+            matvec(ctx, kind(pick(w64, w32), dual_view, push, None, tactic), weights, a)
+        };
         let w0 = &weights[0];
         let mm = (0, 0);
         Ok(Self {
             decode: [
-                matvec(ctx, kind(s::MATVEC_Q8_0, true, 24, None, Q8_0_TACTIC), weights, a)?,
-                matvec(ctx, kind(s::MATVEC_Q4K, false, 24, None, KQUANT_TACTIC), weights, a)?,
-                matvec(ctx, kind(s::MATVEC_Q6K, true, 32, None, KQUANT_TACTIC), weights, a)?,
+                decode(s::MATVEC_Q8_0, s::MATVEC_Q8_0_W32, true, 24, Q8_0_TACTIC)?,
+                decode(s::MATVEC_Q4K, s::MATVEC_Q4K_W32, false, 24, KQUANT_TACTIC)?,
+                decode(s::MATVEC_Q6K, s::MATVEC_Q6K_W32, true, 32, KQUANT_TACTIC)?,
             ],
             batch: [
                 matvec(ctx, kind(s::MATMUL, true, 40, Some(0), mm), weights, a)?,
                 matvec(ctx, kind(s::MATMUL, true, 40, Some(1), mm), weights, a)?,
                 matvec(ctx, kind(s::MATMUL, true, 40, Some(2), mm), weights, a)?,
             ],
-            rmsnorm: build(s::RMSNORM, &[w0, a, a], 24, &[])?,
-            qkv: build(s::QKV_PREP, &[w0, a, a, kv, kv], 64, &[k8, v8])?,
-            attention: build(s::ATTENTION, &[a, a, kv, kv, kv], 44, &[n_rep, ATTENTION_CHUNK, k8, v8])?,
+            rmsnorm: build(pick(s::RMSNORM, s::RMSNORM_W32), &[w0, a, a], 24, &[])?,
+            qkv: build(pick(s::QKV_PREP, s::QKV_PREP_W32), &[w0, a, a, kv, kv], 64, &[k8, v8])?,
+            attention: build(
+                pick(s::ATTENTION, s::ATTENTION_W32),
+                &[a, a, kv, kv, kv],
+                44,
+                &[n_rep, ATTENTION_CHUNK, k8, v8],
+            )?,
             merge: build(s::ATTENTION_MERGE, &[a, a], 24, &[])?,
             silu: build(s::SILU_MUL, &[a, a], 16, &[])?,
             take_last: build(s::TAKE_LAST, &[a, a], 16, &[])?,
