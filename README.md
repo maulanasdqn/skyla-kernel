@@ -6,7 +6,7 @@ Skyla runs DeepSeek-R1-0528-Qwen3-8B on a Ryzen 7 7730U laptop with no discrete 
 **1.9× faster than llama.cpp at generation and 1.7× faster at prompt processing** on the
 same hardware, and checks every kernel against a plain CPU reference. On an Apple M5
 MacBook it runs on a native Metal backend that multiplies on the GPU's neural accelerators:
-**26.5 tok/s generation and 483 tok/s prompt processing** on the same 8B model, within 9% of
+**26.6 tok/s generation and 509 tok/s prompt processing** on the same 8B model, within 9% of
 MLX at generation. It ships a terminal chat and a browser chat UI (Rust/WebAssembly) that
 can switch between models at runtime.
 
@@ -50,24 +50,24 @@ generated tokens, both warmed up, interleaved runs after a cool-down:
 
 | Model | Size | Generation, Skyla | Generation, MLX | Prompt, Skyla | Prompt, MLX |
 |---|---:|---:|---:|---:|---:|
-| Qwen3-0.6B (Q8_0 / MLX 8-bit) | 0.6 GB | **160** | 167 | **4 084** | 8 065 |
-| Qwen3-4B-Instruct-2507 (Q4_K_M / MLX 4-bit) | 2.3 GB | **47.5** | 51.9 | **854** | 1 363 |
-| DeepSeek-R1-0528-Qwen3-8B (Q4_K_M / MLX 4-bit) | 4.7 GB | **26.5** | 28.9 | **483** | 737 |
-| Qwen3-30B-A3B-Instruct-2507 REAP-15B, MoE (Q4_K_M / MLX 4-bit) | 9.1 GB | **54.3** | 61.2 | **541** | 1 119 |
+| Qwen3-0.6B (Q8_0 / MLX 8-bit) | 0.6 GB | **160** | 167 | **4 134** | 8 065 |
+| Qwen3-4B-Instruct-2507 (Q4_K_M / MLX 4-bit) | 2.3 GB | **47.4** | 51.9 | **889** | 1 363 |
+| DeepSeek-R1-0528-Qwen3-8B (Q4_K_M / MLX 4-bit) | 4.7 GB | **26.6** | 28.9 | **509** | 737 |
+| Qwen3-30B-A3B-Instruct-2507 REAP-15B, MoE (Q4_K_M / MLX 4-bit) | 9.1 GB | **54.3** | 61.2 | **553** | 1 119 |
 
 The Skyla 4B run uses the abliterated (uncensored) build of the same model, with identical
 shapes; both 8B runs use the same Josiefied abliterated weights. All figures are tok/s.
 The same build through MoltenVK reached 24.0 / 178 tok/s on R1-8B, so the Metal backend is
-1.1× faster at generation and 2.7× at prompt processing.
+1.1× faster at generation and 2.9× at prompt processing.
 
 - **Generation** is bound by memory bandwidth. R1-8B reads its weights at ~127 GB/s
   against 134 GB/s measured by `skyla bench-bw`. The 4–11% gap to MLX is roughly the size
   difference between Q4_K_M, which keeps the output head and part of `down` in 6.5-bit
   Q6_K, and MLX's uniform 4.5-bit weights.
 - **Prompt processing** multiplies on the M5's neural accelerators through the Metal 4
-  `matmul2d` tensor op, which more than doubled it over `simdgroup_matrix`. It is at 51–66%
-  of MLX for dense models and 48% for MoE, where each expert sees only ~16 tokens of a
-  128-token chunk.
+  `matmul2d` tensor op, which more than doubled it over `simdgroup_matrix`, and reads its
+  activations as f16. It is at 51–69% of MLX for dense models and 49% for MoE, where each
+  expert sees only ~16 tokens of a 128-token chunk.
 
 These four models and Qwen3-0.6B Q4_K_M match the CPU reference with no top-1
 disagreements (worst logit error 0.08–0.50 with the default `--kv v8`).
@@ -246,7 +246,7 @@ replay    per token: dequantize the embedding row on the CPU, replay, read logit
 |---|---|
 | Matrix-vector (decode) | One subgroup (wave64 on the Vega, 32 lanes on the M5) per group of rows; each lane streams 16 bytes of weights per step and keeps a slice of the input in registers across rows. Per-format tactics: Q4_K/Q6_K 2 waves × 4 rows on the Vega and 8 SIMD groups × 1 row on the M5, Q8_0 4 × 2 |
 | Matrix-matrix (prefill), Vega | 128 rows × 32 tokens per workgroup (a 128-token chunk is 4 column tiles; for MoE, one grid row per expert over the tokens routed to it); each 64-wide K step dequantizes once into LDS as f16; 4×4 micro-tiles accumulate with packed f16 FMA inside a step and f32 across steps |
-| Matrix-matrix (prefill), M5 | 128 rows × 64 tokens per threadgroup (32 for MoE experts); each 64-wide K step dequantizes into threadgroup memory as f16 and multiplies with the Metal 4 `matmul2d` tensor op on the neural accelerators, accumulating in a cooperative tensor across K |
+| Matrix-matrix (prefill), M5 | 128 rows × 64 tokens per threadgroup (32 for MoE experts); activations are converted to f16 once per GEMM; each 64-wide K step dequantizes weights into threadgroup memory as f16 and multiplies with the Metal 4 `matmul2d` tensor op on the neural accelerators, accumulating in a cooperative tensor across K |
 | Attention | Split-K decode attention (64-position chunks) with online softmax; one workgroup serves all query heads of a KV head (GQA); causal per token in prefill |
 | QK-norm + RoPE | Fused per head, writes the KV cache, quantizes keys/values in registers when int8 |
 | RMSNorm, SiLU·mul, merge | Small kernels; RMSNorm uses one 1024-thread workgroup |
@@ -314,7 +314,7 @@ token and the largest logit difference at every step, with the Vulkan validation
   time was the multiply itself, whatever the tile shape or alignment; the Metal 4
   `matmul2d` tensor op runs on the neural accelerators and more than doubled prefill.
   Once the multiply was fast, re-reading f32 activations for every row tile was the next
-  largest cost, which 128-row tiles halved.
+  largest cost, which 128-row tiles halved and f16 activations trimmed further.
 - **A 9 GB model on a 16 GB Mac is held once, not twice.** Weights are read with
   `F_NOCACHE` straight into GPU buffers instead of being copied from the memory map, and
   loading the MoE went from 14 s to 4.2 s. When other apps already fill memory, the first
@@ -356,13 +356,12 @@ which also holds every measurement behind the numbers above.
 - Tuned on two machines. It runs on Vulkan 1.3 GPUs with FP16, 8/16-bit storage and a
   subgroup size of 32 or 64, and on Apple silicon with Metal 4; only the Vega 8 and the
   M5 have been checked. Earlier Apple GPUs should run the Metal backend but are untested.
-- On the M5, prompt processing is still behind MLX (51–66% dense, 48% MoE): load,
+- On the M5, prompt processing is still behind MLX (51–69% dense, 49% MoE): load,
   dequantization and the multiply run one after another in each K step.
 
 ## Roadmap
 
-See [docs/roadmap.md](docs/roadmap.md). Next: f16 activations and a larger prefill chunk
-for MoE on the M5, sharing KV reads across a prefill chunk, an OpenAI-compatible endpoint for game engines, and a
+See [docs/roadmap.md](docs/roadmap.md). Next: a larger prefill chunk for MoE on the M5, sharing KV reads across a prefill chunk, an OpenAI-compatible endpoint for game engines, and a
 `skyla compile` step that runs the tactic sweeps on the target and stores the evidence.
 
 ## License
