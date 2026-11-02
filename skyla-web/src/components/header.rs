@@ -16,6 +16,7 @@ pub fn Header() -> impl IntoView {
             return format!("loading {id} …");
         }
         chat.info.with(|i| match i {
+            Some(i) if !i.loaded => format!("{} · memory flushed: the next message reloads the model", i.device),
             Some(i) => format!(
                 "{} · {} / {} tokens · KV {}",
                 i.device, i.position, i.context, i.kv_cache
@@ -24,6 +25,8 @@ pub fn Header() -> impl IntoView {
             None => "offline: start `skyla serve <model>`".into(),
         })
     };
+    let loaded = move || chat.info.with(|i| i.as_ref().is_some_and(|i| i.loaded));
+    let flushable = move || chat.connected.get() && loaded() && !chat.busy.get() && chat.loading.with(Option::is_none);
     let status = move || {
         if chat.connected.get() {
             "dot online"
@@ -51,6 +54,14 @@ pub fn Header() -> impl IntoView {
                     on:click=move |_| link.send(ClientMessage::Reset)
                 >
                     "New chat"
+                </button>
+                <button
+                    class="ghost"
+                    title="Unload the model and free its GPU and system memory"
+                    disabled=move || !flushable()
+                    on:click=move |_| link.send(ClientMessage::Unload)
+                >
+                    "Flush memory"
                 </button>
             </div>
         </header>

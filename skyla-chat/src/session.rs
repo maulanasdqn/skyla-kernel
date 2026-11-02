@@ -54,6 +54,7 @@ impl<'g> Session<'g> {
             context: self.context,
             kv_cache: format!("{:?}", self.kv),
             position: self.engine.pos as usize,
+            loaded: true,
         }
     }
 
