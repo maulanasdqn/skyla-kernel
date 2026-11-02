@@ -2,7 +2,7 @@ use skyla_gguf::Gguf;
 use skyla_types::ModelEntry;
 use std::path::{Path, PathBuf};
 
-const SUPPORTED: [&str; 2] = ["qwen3", "qwen3moe"];
+const SUPPORTED: [&str; 3] = ["qwen3", "qwen3moe", "qwen3vl"];
 
 #[derive(Clone, Default)]
 pub struct Catalog {

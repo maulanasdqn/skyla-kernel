@@ -171,10 +171,15 @@ character's persona). Every reply shows its token count, speed and context use.
 
 ### iPhone app
 
-`ios/` holds a SwiftUI chat app that runs the same engine on the iPhone's GPU through
-`skyla-ffi`, a static library with a small C interface. It downloads Qwen3 4B
-(abliterated) or Qwen3 0.6B inside the app, or loads any `.gguf` put in its folder in the
-Files app, with a 4K context. Qwen3 4B generates at about 17.6 tok/s on an iPhone 17 Pro.
+`ios/` holds **Skyla Runtime**, a SwiftUI chat app that runs the same engine on the
+iPhone's GPU through `skyla-ffi`, a static library with a small C interface. It downloads
+models inside the app, or loads any `.gguf` put in its folder in the Files app, with a 4K
+context. Qwen3 4B generates at about 17.6 tok/s on an iPhone 17 Pro.
+
+For roleplay in Indonesian, SEA-LION v4 4B (decensored), AI Singapore's Southeast Asian
+fine-tune of Qwen3-VL, wrote the most natural Indonesian of six 4B-class candidates
+tested with the same two roleplay scenes; Qwen3 4B abliterated and roleplay fine-tunes
+of Qwen3 4B came out stiff or repetitive.
 
 ```sh
 brew install xcodegen
@@ -368,8 +373,8 @@ which also holds every measurement behind the numbers above.
 
 ## Limitations
 
-- `qwen3` and `qwen3moe` models (head size 128) in three weight formats (Q8_0, Q4_K,
-  Q6_K).
+- `qwen3` and `qwen3moe` models, and the text side of `qwen3vl` (head size 128), in three
+  weight formats (Q8_0, Q4_K, Q6_K).
 - Batch size 1 for generation; one conversation at a time, shared by every browser tab.
 - Prefill slows on long contexts (about 40 tok/s at 4k tokens) because each query in a
   prefill chunk reads the KV cache separately.
