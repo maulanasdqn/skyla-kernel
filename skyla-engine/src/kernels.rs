@@ -8,8 +8,14 @@ use skyla_shaders::Shader;
 pub const Q8_0_TACTIC: (u32, u32) = (4, 2);
 pub const KQUANT_TACTIC: (u32, u32) = (2, 4);
 pub const KQUANT_TACTIC_W32: (u32, u32) = (8, 1);
+#[cfg(any(not(target_os = "macos"), feature = "vulkan"))]
 pub const MATMUL_TILE_ROWS: u32 = 128;
+#[cfg(all(target_os = "macos", not(feature = "vulkan")))]
+pub const MATMUL_TILE_ROWS: u32 = 64;
+#[cfg(any(not(target_os = "macos"), feature = "vulkan"))]
 pub const MATMUL_TILE_COLS: u32 = 32;
+#[cfg(all(target_os = "macos", not(feature = "vulkan")))]
+pub const MATMUL_TILE_COLS: u32 = 64;
 const EXPERT_LPR: [u32; 3] = [64, 32, 16];
 
 pub struct Matvec {
