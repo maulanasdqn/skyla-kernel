@@ -1,10 +1,15 @@
 use skyla_types::Settings;
+use std::collections::VecDeque;
+
+const REPEAT_WINDOW: usize = 64;
+const REPEAT_PENALTY: f32 = 1.1;
 
 pub struct Sampler {
     temp: f32,
     top_k: usize,
     top_p: f32,
     state: u64,
+    recent: VecDeque<u32>,
 }
 
 impl Sampler {
@@ -14,6 +19,7 @@ impl Sampler {
             top_k: top_k.max(1),
             top_p,
             state: seed | 1,
+            recent: VecDeque::with_capacity(REPEAT_WINDOW),
         }
     }
 
@@ -33,7 +39,32 @@ impl Sampler {
         if self.temp <= 0.0 {
             return skyla_ref::argmax(logits);
         }
+        let token = self.pick(logits);
+        if self.recent.len() == REPEAT_WINDOW {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(token);
+        token
+    }
+
+    fn penalized(&self, logits: &[f32]) -> Vec<(u32, f32)> {
         let mut cand: Vec<(u32, f32)> = logits.iter().enumerate().map(|(i, &l)| (i as u32, l)).collect();
+        let mut seen: Vec<u32> = self.recent.iter().copied().collect();
+        seen.sort_unstable();
+        seen.dedup();
+        for t in seen {
+            let l = &mut cand[t as usize].1;
+            *l = if *l > 0.0 {
+                *l / REPEAT_PENALTY
+            } else {
+                *l * REPEAT_PENALTY
+            };
+        }
+        cand
+    }
+
+    fn pick(&mut self, logits: &[f32]) -> u32 {
+        let mut cand = self.penalized(logits);
         let k = self.top_k.min(cand.len());
         cand.select_nth_unstable_by(k - 1, |a, b| b.1.total_cmp(&a.1));
         cand.truncate(k);
