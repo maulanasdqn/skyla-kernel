@@ -1,11 +1,13 @@
 use crate::arena::ATTENTION_CHUNK;
+use crate::gpu::{Buffer, Context, Pipeline};
 use crate::kv::KvPrecision;
 use anyhow::{bail, Result};
 use skyla_gguf::DType;
-use skyla_vk::{Buffer, Context, Pipeline};
+use skyla_shaders::Shader;
 
 pub const Q8_0_TACTIC: (u32, u32) = (4, 2);
 pub const KQUANT_TACTIC: (u32, u32) = (2, 4);
+pub const KQUANT_TACTIC_W32: (u32, u32) = (8, 1);
 pub const MATMUL_TILE_ROWS: u32 = 128;
 pub const MATMUL_TILE_COLS: u32 = 32;
 const EXPERT_LPR: [u32; 3] = [64, 32, 16];
@@ -33,7 +35,7 @@ pub struct Kernels {
 }
 
 struct Kind<'a> {
-    spirv: &'a [u8],
+    spirv: &'a Shader,
     dual_view: bool,
     push: u32,
     matmul_type: Option<u32>,
@@ -100,9 +102,10 @@ impl Kernels {
     ) -> Result<Self> {
         let (k8, v8) = (precision.keys_q8() as u32, precision.values_q8() as u32);
         let w32 = wave32(ctx)?;
+        let kquant = if w32 { KQUANT_TACTIC_W32 } else { KQUANT_TACTIC };
         let lanes = if w32 { 32 } else { 64 };
-        let pick = |w64: &'static [u8], w32_spirv: &'static [u8]| if w32 { w32_spirv } else { w64 };
-        let build = |spirv: &[u8], bufs: &[&Buffer], push: u32, spec: &[u32]| -> Result<Pipeline> {
+        let pick = |w64: &'static Shader, w32_spirv: &'static Shader| if w32 { w32_spirv } else { w64 };
+        let build = |spirv: &Shader, bufs: &[&Buffer], push: u32, spec: &[u32]| -> Result<Pipeline> {
             let p = ctx.create_pipeline(spirv, bufs.len() as u32, push, spec)?;
             p.bind_buffers(bufs);
             Ok(p)
@@ -123,30 +126,30 @@ impl Kernels {
         let mm = (0, 0);
         Ok(Self {
             decode: [
-                decode(s::MATVEC_Q8_0, s::MATVEC_Q8_0_W32, true, 36, Q8_0_TACTIC)?,
-                decode(s::MATVEC_Q4K, s::MATVEC_Q4K_W32, false, 36, KQUANT_TACTIC)?,
-                decode(s::MATVEC_Q6K, s::MATVEC_Q6K_W32, true, 44, KQUANT_TACTIC)?,
+                decode(&s::MATVEC_Q8_0, &s::MATVEC_Q8_0_W32, true, 36, Q8_0_TACTIC)?,
+                decode(&s::MATVEC_Q4K, &s::MATVEC_Q4K_W32, false, 36, kquant)?,
+                decode(&s::MATVEC_Q6K, &s::MATVEC_Q6K_W32, true, 44, kquant)?,
             ],
             batch: [
-                matvec(ctx, kind(s::MATMUL, true, 52, Some(0), mm), weights, a)?,
-                matvec(ctx, kind(s::MATMUL, true, 52, Some(1), mm), weights, a)?,
-                matvec(ctx, kind(s::MATMUL, true, 52, Some(2), mm), weights, a)?,
+                matvec(ctx, kind(&s::MATMUL, true, 52, Some(0), mm), weights, a)?,
+                matvec(ctx, kind(&s::MATMUL, true, 52, Some(1), mm), weights, a)?,
+                matvec(ctx, kind(&s::MATMUL, true, 52, Some(2), mm), weights, a)?,
             ],
-            rmsnorm: build(pick(s::RMSNORM, s::RMSNORM_W32), &[w0, a, a], 24, &[])?,
-            qkv: build(pick(s::QKV_PREP, s::QKV_PREP_W32), &[w0, a, a, kv, kv], 64, &[k8, v8])?,
+            rmsnorm: build(pick(&s::RMSNORM, &s::RMSNORM_W32), &[w0, a, a], 24, &[])?,
+            qkv: build(pick(&s::QKV_PREP, &s::QKV_PREP_W32), &[w0, a, a, kv, kv], 64, &[k8, v8])?,
             attention: build(
-                pick(s::ATTENTION, s::ATTENTION_W32),
+                pick(&s::ATTENTION, &s::ATTENTION_W32),
                 &[a, a, kv, kv, kv],
                 44,
                 &[n_rep, ATTENTION_CHUNK, k8, v8],
             )?,
-            merge: build(s::ATTENTION_MERGE, &[a, a], 24, &[])?,
-            silu: build(s::SILU_MUL, &[a, a], 16, &[])?,
-            take_last: build(s::TAKE_LAST, &[a, a], 16, &[])?,
-            logits: build(pick(s::MOE_LOGITS, s::MOE_LOGITS_W32), &[w0, a, a], 20, &[])?,
-            route: build(pick(s::MOE_ROUTE, s::MOE_ROUTE_W32), &[a, a], 20, &[])?,
-            combine: build(s::MOE_COMBINE, &[a], 24, &[])?,
-            sort: build(s::MOE_SORT, &[a], 20, &[])?,
+            merge: build(&s::ATTENTION_MERGE, &[a, a], 24, &[])?,
+            silu: build(&s::SILU_MUL, &[a, a], 16, &[])?,
+            take_last: build(&s::TAKE_LAST, &[a, a], 16, &[])?,
+            logits: build(pick(&s::MOE_LOGITS, &s::MOE_LOGITS_W32), &[w0, a, a], 20, &[])?,
+            route: build(pick(&s::MOE_ROUTE, &s::MOE_ROUTE_W32), &[a, a], 20, &[])?,
+            combine: build(&s::MOE_COMBINE, &[a], 24, &[])?,
+            sort: build(&s::MOE_SORT, &[a], 20, &[])?,
         })
     }
 

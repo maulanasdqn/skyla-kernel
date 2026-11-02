@@ -55,7 +55,7 @@ fn main() {
                 .unwrap_or_else(|e| panic!("running {}: {e} (install the Vulkan SDK or set GLSLC)", glslc.display()));
             assert!(status.success(), "glslc failed on {}", src.display());
             consts.push_str(&format!(
-                "pub const {name}: &[u8] = include_bytes!({:?});\n",
+                "pub const {name}: Shader = Shader {{ name: {stem:?}, spirv: include_bytes!({:?}) }};\n",
                 spv.display().to_string()
             ));
         }

@@ -46,6 +46,21 @@ impl Drop for Buffer {
 }
 
 impl Context {
+    pub fn max_buffer(&self) -> u64 {
+        self.max_allocation_size
+            .min(self.props.limits.max_storage_buffer_range as u64)
+    }
+
+    pub fn alloc_host(&self, size: u64) -> Result<Buffer> {
+        let excluded = MemoryPropertyFlags::DEVICE_COHERENT_AMD | MemoryPropertyFlags::DEVICE_UNCACHED_AMD;
+        let preferred = MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT;
+        let memory = self
+            .find_memory_type(preferred | MemoryPropertyFlags::HOST_CACHED, excluded)
+            .or_else(|| self.find_memory_type(preferred, excluded))
+            .ok_or_else(|| anyhow!("no host-visible coherent memory type"))?;
+        self.alloc_buffer(size, BufferUsageFlags::STORAGE_BUFFER, memory)
+    }
+
     pub fn find_memory_type(&self, required: MemoryPropertyFlags, excluded: MemoryPropertyFlags) -> Option<u32> {
         self.memory_types()
             .iter()

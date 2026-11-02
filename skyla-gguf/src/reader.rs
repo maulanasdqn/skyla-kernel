@@ -1,4 +1,4 @@
-use crate::{DType, Gguf, TensorInfo, Value};
+use crate::{direct, DType, Gguf, TensorInfo, Value};
 use anyhow::{anyhow, bail, ensure, Context as _, Result};
 use memmap2::Mmap;
 use std::collections::BTreeMap;
@@ -117,6 +117,7 @@ impl Gguf {
 
         Ok(Self {
             mmap,
+            file: direct::open(path)?,
             version,
             metadata,
             tensors,

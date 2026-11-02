@@ -25,7 +25,7 @@ fn gpu(ctx: &Context, size: u64, reps: u32) -> Result<()> {
     let pipelines = WG_SIZES
         .iter()
         .map(|&wg| {
-            ctx.create_pipeline(skyla_shaders::BANDWIDTH, 2, 4, &[wg])
+            ctx.create_pipeline(&skyla_shaders::BANDWIDTH, 2, 4, &[wg])
                 .map(|p| (wg, p))
         })
         .collect::<Result<Vec<_>>>()?;

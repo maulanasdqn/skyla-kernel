@@ -91,6 +91,11 @@ enum Command {
         check: bool,
         #[arg(long, help = "Time every stage of the last decode step with GPU timestamps")]
         profile: bool,
+        #[arg(
+            long,
+            help = "Run the prompt once before timing, as llama-bench and mlx_lm.benchmark do"
+        )]
+        warmup: bool,
     },
     #[command(about = "Chat with the model, streaming tokens from the GPU engine")]
     Chat {
@@ -148,7 +153,8 @@ fn main() -> Result<()> {
             kv,
             check,
             profile,
-        } => run::run(&model, &tokens, n, (ctx, kv.precision()), check, profile),
+            warmup,
+        } => run::run(&model, &tokens, n, (ctx, kv.precision()), check, profile, warmup),
         Command::Chat {
             model,
             ctx,

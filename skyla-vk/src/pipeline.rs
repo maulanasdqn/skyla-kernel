@@ -1,6 +1,7 @@
 use crate::{Buffer, Context};
 use anyhow::{anyhow, Result};
 use ash::vk;
+use skyla_shaders::Shader;
 
 pub struct Pipeline {
     device: ash::Device,
@@ -12,20 +13,20 @@ pub struct Pipeline {
 }
 
 impl Context {
-    pub fn create_pipeline(&self, spirv: &[u8], n_buffers: u32, push_size: u32, spec: &[u32]) -> Result<Pipeline> {
-        self.create_pipeline_sets(spirv, n_buffers, push_size, spec, 1)
+    pub fn create_pipeline(&self, shader: &Shader, n_buffers: u32, push_size: u32, spec: &[u32]) -> Result<Pipeline> {
+        self.create_pipeline_sets(shader, n_buffers, push_size, spec, 1)
     }
 
     pub fn create_pipeline_sets(
         &self,
-        spirv: &[u8],
+        shader: &Shader,
         n_buffers: u32,
         push_size: u32,
         spec: &[u32],
         n_sets: u32,
     ) -> Result<Pipeline> {
         let device = &self.device;
-        let code = ash::util::read_spv(&mut std::io::Cursor::new(spirv))?;
+        let code = ash::util::read_spv(&mut std::io::Cursor::new(shader.spirv))?;
         let module_info = vk::ShaderModuleCreateInfo::default().code(&code);
         let module = unsafe { device.create_shader_module(&module_info, None) }?;
 

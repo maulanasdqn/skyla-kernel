@@ -1,8 +1,7 @@
-use crate::host_memory;
+use crate::gpu::{Buffer, Context};
 use crate::kv::{KvLayout, KvPrecision};
 use anyhow::{ensure, Result};
 use skyla_ref::Config;
-use skyla_vk::{Buffer, BufferUsageFlags, Context};
 
 pub const ATTENTION_CHUNK: u32 = 64;
 pub const BATCH: usize = 128;
@@ -93,17 +92,15 @@ impl Arena {
             stride: stride as u32,
         };
 
-        let memory = host_memory(ctx)?;
-        let usage = BufferUsageFlags::STORAGE_BUFFER;
-        let buffer = ctx.alloc_buffer(l.size as u64 * 4, usage, memory)?;
+        let buffer = ctx.alloc_host(l.size as u64 * 4)?;
         let kv_layout = KvLayout::new(precision, c.n_layer, max_ctx, c.n_head_kv * c.head_dim);
         let kv_bytes = kv_layout.bytes();
         ensure!(
-            kv_bytes <= ctx.max_allocation_size,
+            kv_bytes <= ctx.max_buffer(),
             "KV cache for {max_ctx} tokens needs {} MiB, above the allocation cap",
             kv_bytes >> 20
         );
-        let kv = ctx.alloc_buffer(kv_bytes, usage, memory)?;
+        let kv = ctx.alloc_host(kv_bytes)?;
         Ok(Self {
             buffer,
             kv,

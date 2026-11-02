@@ -1,4 +1,5 @@
 use crate::arena::{Arena, BATCH};
+use crate::gpu::{Context, Recording};
 use crate::graph;
 use crate::kernels::Kernels;
 use crate::kv::KvPrecision;
@@ -6,7 +7,6 @@ use crate::weights::Weights;
 use anyhow::{anyhow, ensure, Result};
 use skyla_gguf::{dequantize, DType, Gguf};
 use skyla_ref::Config;
-use skyla_vk::{Context, Recording};
 
 pub struct Engine<'g> {
     decode: Recording,
