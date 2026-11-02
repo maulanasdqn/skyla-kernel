@@ -1,0 +1,47 @@
+name: Skyla
+options:
+  bundleIdPrefix: com.maulanasdqn
+  deploymentTarget:
+    iOS: "26.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: PSF4PDL8N8
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+targets:
+  Skyla:
+    type: application
+    platform: iOS
+    sources:
+      - path: Skyla
+        excludes:
+          - "*.h"
+    info:
+      path: Skyla/Info.plist
+      properties:
+        CFBundleDisplayName: Skyla
+        UILaunchScreen: {}
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.maulanasdqn.skyla
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_OBJC_BRIDGING_HEADER: Skyla/Skyla-Bridging-Header.h
+        HEADER_SEARCH_PATHS: $(SRCROOT)/../skyla-ffi/include
+        LIBRARY_SEARCH_PATHS: $(SRCROOT)/../target/aarch64-apple-ios/release
+        OTHER_LDFLAGS: -lskyla_ffi
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+    dependencies:
+      - sdk: Metal.framework
+      - sdk: Foundation.framework
+    preBuildScripts:
+      - name: Build Skyla engine (Rust)
+        basedOnDependencyAnalysis: false
+        script: |
+          export PATH="$HOME/.nix-profile/bin:/etc/profiles/per-user/$USER/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          cd "$SRCROOT/.."
+          cargo build --release -p skyla-ffi --target aarch64-apple-ios

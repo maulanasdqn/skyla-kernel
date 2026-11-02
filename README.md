@@ -169,6 +169,26 @@ architectures Skyla cannot run yet. Replies stream with the thinking section col
 temperature, top-p, the reply length limit and a system prompt (for example a game
 character's persona). Every reply shows its token count, speed and context use.
 
+### iPhone app
+
+`ios/` holds a SwiftUI chat app that runs the same engine on the iPhone's GPU through
+`skyla-ffi`, a static library with a small C interface. It downloads Qwen3 4B
+(abliterated) or Qwen3 0.6B inside the app, or loads any `.gguf` put in its folder in the
+Files app, with a 4K context. Qwen3 4B generates at about 17.6 tok/s on an iPhone 17 Pro.
+
+```sh
+brew install xcodegen
+rustup target add aarch64-apple-ios
+cd ios && xcodegen generate
+xcodebuild -project Skyla.xcodeproj -scheme Skyla -configuration Release \
+  -destination "id=<device UDID>" -allowProvisioningUpdates build
+xcrun devicectl device install app --device <device UDID> build/Build/Products/Release-iphoneos/Skyla.app
+```
+
+Set `DEVELOPMENT_TEAM` in `ios/project.yml` to your team and sign in to Xcode first. The
+Xcode build compiles the Rust engine for `aarch64-apple-ios` itself. With a free Apple
+account the app has to be reinstalled every 7 days.
+
 ### Terminal chat
 
 ```powershell
@@ -339,6 +359,8 @@ token and the largest logit difference at every step, with the Vulkan validation
 | `skyla-server` | axum server: WebSocket streaming with stop and reset, model catalog and switching, static UI; the engine runs on its own thread |
 | `skyla-web` | Leptos chat UI compiled to WebAssembly |
 | `skyla-cli` | The `skyla` binary |
+| `skyla-ffi` | C interface to chat sessions (open, streaming chat, cancel, reset), built as a static library for the iOS app |
+| `ios/` | SwiftUI iPhone app (XcodeGen project) |
 
 Code conventions: crates live at the repository root, source files stay under 200 lines,
 and the code carries no comments; design notes live in [docs/roadmap.md](docs/roadmap.md),
