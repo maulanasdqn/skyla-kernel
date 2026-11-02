@@ -112,7 +112,7 @@ impl TensorInfo {
 
 pub struct Gguf {
     mmap: Mmap,
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(not(target_vendor = "apple"), allow(dead_code))]
     file: File,
     pub version: u32,
     pub metadata: BTreeMap<String, Value>,

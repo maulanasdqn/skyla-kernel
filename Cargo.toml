@@ -4,6 +4,7 @@ members = [
     "skyla-chat",
     "skyla-cli",
     "skyla-engine",
+    "skyla-ffi",
     "skyla-gguf",
     "skyla-metal",
     "skyla-ref",

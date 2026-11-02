@@ -1899,6 +1899,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "skyla-ffi"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "skyla-chat",
+ "skyla-engine",
+ "skyla-gguf",
+ "skyla-tok",
+ "skyla-types",
+]
+
+[[package]]
 name = "skyla-gguf"
 version = "0.1.0"
 dependencies = [

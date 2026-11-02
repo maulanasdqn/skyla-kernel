@@ -10,5 +10,5 @@ anyhow.workspace = true
 half.workspace = true
 memmap2.workspace = true
 
-[target.'cfg(target_os = "macos")'.dependencies]
+[target.'cfg(target_vendor = "apple")'.dependencies]
 libc.workspace = true

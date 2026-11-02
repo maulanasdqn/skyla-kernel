@@ -1,4 +1,4 @@
-#[cfg(any(not(target_os = "macos"), feature = "vulkan"))]
+#[cfg(any(not(target_vendor = "apple"), feature = "vulkan"))]
 mod selected {
     pub use skyla_vk as gpu;
     pub const MATMUL_TILE_COLS: u32 = 32;
@@ -6,7 +6,7 @@ mod selected {
     pub const HALF_INPUTS: bool = false;
 }
 
-#[cfg(all(target_os = "macos", not(feature = "vulkan")))]
+#[cfg(all(target_vendor = "apple", not(feature = "vulkan")))]
 mod selected {
     pub use skyla_metal as gpu;
     pub const MATMUL_TILE_COLS: u32 = 64;

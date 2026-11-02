@@ -14,9 +14,12 @@ skyla-shaders.workspace = true
 [features]
 vulkan = []
 
-[target.'cfg(not(target_os = "macos"))'.dependencies]
+[target.'cfg(not(target_vendor = "apple"))'.dependencies]
 skyla-vk.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 skyla-metal.workspace = true
 skyla-vk.workspace = true
+
+[target.'cfg(target_os = "ios")'.dependencies]
+skyla-metal.workspace = true

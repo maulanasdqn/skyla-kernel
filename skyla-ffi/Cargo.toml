@@ -1,0 +1,17 @@
+[package]
+name = "skyla-ffi"
+description = "C interface to Skyla chat sessions, for the iOS app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+anyhow.workspace = true
+skyla-chat.workspace = true
+skyla-engine.workspace = true
+skyla-gguf.workspace = true
+skyla-tok.workspace = true
+skyla-types.workspace = true
