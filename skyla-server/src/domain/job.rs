@@ -24,6 +24,7 @@ impl Cancel {
 pub enum Job {
     Info(oneshot::Sender<Info>),
     Reset(oneshot::Sender<usize>),
+    Unload(oneshot::Sender<Info>),
     Chat {
         text: String,
         settings: Settings,

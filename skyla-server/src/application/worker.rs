@@ -1,3 +1,4 @@
+use crate::application::parked::{fail, idle, LoadReply, Next};
 use crate::domain::{Cancel, Job};
 use anyhow::Result;
 use skyla_chat::{seed_from_clock, Piece, Sampler, Session};
@@ -7,18 +8,7 @@ use skyla_tok::Tokenizer;
 use skyla_types::{Info, ServerMessage, Settings};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
-use tokio::sync::{mpsc, oneshot};
-
-type LoadReply = oneshot::Sender<Result<Info, String>>;
-
-enum Next {
-    Load {
-        id: String,
-        path: PathBuf,
-        reply: LoadReply,
-    },
-    Quit,
-}
+use tokio::sync::mpsc;
 
 fn info(session: &Session, id: &str) -> Info {
     Info {
@@ -57,8 +47,8 @@ fn chat(
     let _ = events.send(message);
 }
 
-fn serve(session: &mut Session, id: &str, inbox: &Receiver<Job>) -> Next {
-    while let Ok(job) = inbox.recv() {
+fn serve(session: &mut Session, id: &str, first: Option<Job>, inbox: &Receiver<Job>) -> Next {
+    for job in first.into_iter().chain(inbox.iter()) {
         match job {
             Job::Info(reply) => {
                 let _ = reply.send(info(session, id));
@@ -73,7 +63,22 @@ fn serve(session: &mut Session, id: &str, inbox: &Receiver<Job>) -> Next {
                 events,
                 cancel,
             } => chat(session, &text, &settings, &events, &cancel),
-            Job::Load { id, path, reply } => return Next::Load { id, path, reply },
+            Job::Unload(reply) => {
+                let parked = Info {
+                    position: 0,
+                    loaded: false,
+                    ..info(session, id)
+                };
+                return Next::Unload(reply, parked);
+            }
+            Job::Load { id, path, reply } => {
+                return Next::Load {
+                    id,
+                    path,
+                    reply: Some(reply),
+                    pending: None,
+                }
+            }
         }
     }
     Next::Quit
@@ -97,24 +102,44 @@ pub fn run(
     let mut previous = start;
     let mut ready = Some(ready);
     let mut reply: Option<LoadReply> = None;
+    let mut pending: Option<Job> = None;
+    let mut parked: Option<Info> = None;
     let mut falling_back = false;
     loop {
         let (id, path) = current.clone();
-        let result = with_model(&path, context, kv, |session| {
-            if let Some(r) = ready.take() {
-                let _ = r.send(Ok(()));
-            }
-            if let Some(r) = reply.take() {
-                let _ = r.send(Ok(info(session, &id)));
-            }
-            serve(session, &id, &inbox)
-        });
+        let result = match &parked {
+            Some(info) => Ok(idle(info, &path, &inbox)),
+            None => with_model(&path, context, kv, |session| {
+                if let Some(r) = ready.take() {
+                    let _ = r.send(Ok(()));
+                }
+                if let Some(r) = reply.take() {
+                    let _ = r.send(Ok(info(session, &id)));
+                }
+                if let Some(Job::Chat { events, .. }) = &pending {
+                    let _ = events.send(ServerMessage::Info(info(session, &id)));
+                }
+                serve(session, &id, pending.take(), &inbox)
+            }),
+        };
         match result {
-            Ok(Next::Load { id, path, reply: r }) => {
-                previous = current;
+            Ok(Next::Load {
+                id,
+                path,
+                reply: r,
+                pending: p,
+            }) => {
+                if parked.take().is_none() {
+                    previous = current;
+                }
                 current = (id, path);
-                reply = Some(r);
+                reply = r;
+                pending = p;
                 falling_back = false;
+            }
+            Ok(Next::Unload(r, info)) => {
+                let _ = r.send(info.clone());
+                parked = Some(info);
             }
             Ok(Next::Quit) => return,
             Err(e) => {
@@ -124,8 +149,9 @@ pub fn run(
                     return;
                 }
                 if let Some(r) = reply.take() {
-                    let _ = r.send(Err(message));
+                    let _ = r.send(Err(message.clone()));
                 }
+                fail(pending.take(), &message);
                 if falling_back {
                     return;
                 }

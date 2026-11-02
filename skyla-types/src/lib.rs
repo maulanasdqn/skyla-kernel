@@ -28,6 +28,7 @@ pub enum ClientMessage {
     Stop,
     Reset,
     Load { id: String },
+    Unload,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -47,6 +48,7 @@ pub struct Info {
     pub context: usize,
     pub kv_cache: String,
     pub position: usize,
+    pub loaded: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

@@ -40,6 +40,12 @@ async fn handle(
             let _ = events.send(ServerMessage::Reset { position });
             Ok(())
         }
+        ClientMessage::Unload => {
+            cancel.set();
+            let info = engine.unload().await?;
+            let _ = events.send(ServerMessage::Info(info));
+            Ok(())
+        }
         ClientMessage::Load { id } => {
             cancel.set();
             let _ = events.send(ServerMessage::Loading { id: id.clone() });

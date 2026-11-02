@@ -69,6 +69,12 @@ impl EngineHandle {
         rx.await.map_err(unavailable)
     }
 
+    pub async fn unload(&self) -> Result<Info, AppError> {
+        let (tx, rx) = oneshot::channel();
+        self.send(Job::Unload(tx))?;
+        rx.await.map_err(unavailable)
+    }
+
     pub async fn load(&self, id: &str) -> Result<Info, AppError> {
         let (entry, path) = self
             .catalog()

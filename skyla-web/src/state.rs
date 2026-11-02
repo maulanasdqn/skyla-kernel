@@ -81,7 +81,7 @@ impl Chat {
                 let changed = self
                     .info
                     .with_untracked(|i| i.as_ref().is_some_and(|i| i.model_id != info.model_id));
-                if changed {
+                if changed || !info.loaded {
                     self.turns.set(Vec::new());
                 }
                 self.loading.set(None);
