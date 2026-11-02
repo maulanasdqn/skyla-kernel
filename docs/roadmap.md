@@ -429,6 +429,11 @@ every other platform is unchanged.
   loads from ~51 to ~26 ms per chunk; the multiply is then ~60 ms and dequant ~25 ms.
   Rejected: double buffering with K = 32 (+16%, the accelerator prefers K = 64) and
   `relaxed_precision` (+5%).
+- Prefill GEMM inputs are converted to f16 once per GEMM (`to_half`) into a scratch
+  region, and the GEMM reads them as `half4`: every row tile re-reads its activations,
+  now at half the bytes and without a per-tile conversion. Prefill +4.4% on Qwen3-4B
+  (852 → 889 tok/s), +5.8% on R1-8B (481 → 509) and +3.0% on the MoE (537 → 553);
+  the GEMM already rounded activations to f16, so results are unchanged.
 - MoE experts see ~16 tokens each per 128-token chunk, so expert GEMMs use 32-token
   tiles instead of 64 (+21% MoE prefill). A larger prefill chunk would help MoE most,
   but the split-K attention partials grow with it (~4 MB per token at 16k context).
