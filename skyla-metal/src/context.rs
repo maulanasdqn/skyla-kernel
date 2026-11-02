@@ -68,7 +68,10 @@ impl Context {
         }
         source.push_str(body);
         let options = MTLCompileOptions::new();
-        options.setLanguageVersion(MTLLanguageVersion::Version3_1);
+        options.setLanguageVersion(match body.contains("metal_tensor") {
+            true => MTLLanguageVersion::Version4_0,
+            false => MTLLanguageVersion::Version3_1,
+        });
         let library = self
             .device
             .newLibraryWithSource_options_error(&NSString::from_str(&source), Some(&options))

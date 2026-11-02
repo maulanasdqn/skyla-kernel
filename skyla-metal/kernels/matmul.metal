@@ -1,4 +1,6 @@
 #include <metal_stdlib>
+#include <metal_tensor>
+#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
 using namespace metal;
 
 #ifndef SPEC_0
@@ -14,10 +16,15 @@ constant uint TYPE = SPEC_0;
 constant bool ACCUM = (SPEC_1) != 0;
 constant bool MOE = (SPEC_2) != 0;
 
-constant uint TM = 128;
-constant uint TN = 32;
+constant uint TM = 64;
+constant uint NT = 128;
+#ifndef TILE_N
+#define TILE_N 64
+#endif
+constant uint TN = TILE_N;
 constant uint TK = 64;
-constant uint PAD = TK / 2 + 1;
+constant uint PAD = TK / 2 + 4;
+constant uint XN = TN + 8;
 
 struct Push {
     uint o0;
@@ -120,11 +127,15 @@ kernel void matmul(
     const device uint *ctl     [[buffer(4)]],
     constant Push &p           [[buffer(5)]],
     uint3 wg   [[threadgroup_position_in_grid]],
-    uint3 lid  [[thread_position_in_threadgroup]],
-    uint sg    [[simdgroup_index_in_threadgroup]])
+    uint3 lid  [[thread_position_in_threadgroup]])
 {
-    threadgroup half2 ws[TM * PAD];
-    threadgroup half2 xs[TN * PAD];
+    constexpr uint WS_BYTES = TM * PAD * 4;
+    constexpr uint XS_BYTES = TK * XN * 2;
+    constexpr uint STAGE_BYTES = TM * TN * 4;
+    constexpr uint SMEM_BYTES = WS_BYTES + XS_BYTES > STAGE_BYTES ? WS_BYTES + XS_BYTES : STAGE_BYTES;
+    threadgroup uchar smem[SMEM_BYTES];
+    threadgroup half2 *ws = (threadgroup half2 *)smem;
+    threadgroup half *xs = (threadgroup half *)(smem + WS_BYTES);
 
     uint t = lid.x;
     uint row0 = wg.x * TM;
@@ -137,14 +148,17 @@ kernel void matmul(
     uint n_tok = min(n_all - col0, TN);
     uint list = p.list_off + col0 + (MOE ? ctl[p.table_off + 2 * e + 1] : 0);
     uint base = MOE ? e * p.n_out : 0;
-    threadgroup const half *wh = (threadgroup const half *)ws;
-    threadgroup const half *xh = (threadgroup const half *)xs;
-    simdgroup_float8x8 acc[2][4];
+    constexpr auto desc = mpp::tensor_ops::matmul2d_descriptor(int(TM), int(TN), int(TK), false, false, false,
+        mpp::tensor_ops::matmul2d_descriptor::mode::multiply_accumulate);
+    mpp::tensor_ops::matmul2d<desc, execution_simdgroups<NT / 32>> op;
+    using Tile = tensor<threadgroup half, dextents<int32_t, 2>, tensor_inline>;
+    Tile ta((threadgroup half *)ws, dextents<int32_t, 2>(TK, TM), array<int32_t, 2>{1, int(2 * PAD)});
+    Tile tb(xs, dextents<int32_t, 2>(TN, TK), array<int32_t, 2>{1, int(XN)});
+    auto acc = op.get_destination_cooperative_tensor<Tile, Tile, float>();
     #pragma unroll
-    for (uint r = 0; r < 2; r++) {
-        #pragma unroll
-        for (uint c = 0; c < 4; c++) {
-            acc[r][c] = simdgroup_float8x8(0.0f);
+    for (uint16_t i = 0; i < acc.get_capacity(); ++i) {
+        if (acc.is_valid_element(i)) {
+            acc[i] = 0.0f;
         }
     }
 
@@ -153,53 +167,37 @@ kernel void matmul(
     uint grow = base + min(row0 + lr, p.n_out - 1);
     uint xt = t / 8;
     uint xk = (t % 8) * 8;
-    uint xr = MOE ? ctl[list + min(xt, n_tok - 1)] / p.x_div : col0 + xt;
+    uint xr[TN / 16];
+    #pragma unroll
+    for (uint h = 0; h < TN / 16; h++) {
+        xr[h] = MOE ? ctl[list + min(xt + 16 * h, n_tok - 1)] / p.x_div : col0 + xt + 16 * h;
+    }
 
     for (uint k0 = 0; k0 < p.n_in; k0 += TK) {
         dequant(w, wd, p, ws, grow, k0 + hk * 32, lr * PAD + hk * 16);
-        uint xb = (p.x_off + xr * p.x_stride + k0 + xk) / 4;
-        float4 xa = x4[xb];
-        float4 xc = x4[xb + 1];
-        xs[xt * PAD + xk / 2] = half2(xa.xy);
-        xs[xt * PAD + xk / 2 + 1] = half2(xa.zw);
-        xs[xt * PAD + xk / 2 + 2] = half2(xc.xy);
-        xs[xt * PAD + xk / 2 + 3] = half2(xc.zw);
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
         #pragma unroll
-        for (uint kk = 0; kk < TK; kk += 8) {
-            simdgroup_half8x8 a[2];
-            simdgroup_half8x8 b[4];
+        for (uint h = 0; h < TN / 16; h++) {
+            uint xb = (p.x_off + xr[h] * p.x_stride + k0 + xk) / 4;
+            float4 xa = x4[xb];
+            float4 xc = x4[xb + 1];
             #pragma unroll
-            for (uint r = 0; r < 2; r++) {
-                simdgroup_load(a[r], wh + (sg * 16 + r * 8) * (2 * PAD) + kk, 2 * PAD);
-            }
-            #pragma unroll
-            for (uint c = 0; c < 4; c++) {
-                simdgroup_load(b[c], xh + (c * 8) * (2 * PAD) + kk, 2 * PAD, ulong2(0, 0), true);
-            }
-            #pragma unroll
-            for (uint r = 0; r < 2; r++) {
-                #pragma unroll
-                for (uint c = 0; c < 4; c++) {
-                    simdgroup_multiply_accumulate(acc[r][c], a[r], b[c], acc[r][c]);
-                }
+            for (uint i = 0; i < 4; i++) {
+                xs[(xk + i) * XN + xt + 16 * h] = half(xa[i]);
+                xs[(xk + 4 + i) * XN + xt + 16 * h] = half(xc[i]);
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        op.run(ta, tb, acc);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
-    threadgroup float *stage = (threadgroup float *)ws;
-    #pragma unroll
-    for (uint r = 0; r < 2; r++) {
-        #pragma unroll
-        for (uint c = 0; c < 4; c++) {
-            simdgroup_store(acc[r][c], stage + (sg * 16 + r * 8) * TN + c * 8, TN);
-        }
-    }
+    threadgroup float *stage = (threadgroup float *)smem;
+    tensor<threadgroup float, dextents<int32_t, 2>, tensor_inline> tc(stage, dextents<int32_t, 2>(TN, TM), array<int32_t, 2>{1, int(TN)});
+    acc.store(tc);
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    for (uint i = t; i < TM * TN; i += 256) {
+    for (uint i = t; i < TM * TN; i += NT) {
         uint tok = i / TM;
         uint lr_out = i % TM;
         uint row = row0 + lr_out;
