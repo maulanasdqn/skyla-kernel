@@ -69,7 +69,7 @@ struct ModelHeader: View {
         Button(action: action) {
             VStack(spacing: 2) {
                 HStack(spacing: 4) {
-                    Text(chat.current?.short ?? "Skyla")
+                    Text(chat.current?.short ?? "Skyla Runtime")
                         .font(.headline)
                         .lineLimit(1)
                     Image(systemName: "chevron.down")
