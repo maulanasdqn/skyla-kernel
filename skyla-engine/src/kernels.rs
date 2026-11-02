@@ -1,4 +1,5 @@
 use crate::arena::ATTENTION_CHUNK;
+use crate::backend::{HALF_INPUTS, TO_HALF};
 use crate::gpu::{Buffer, Context, Pipeline};
 use crate::kv::KvPrecision;
 use anyhow::{bail, Result};
@@ -9,14 +10,6 @@ pub const Q8_0_TACTIC: (u32, u32) = (4, 2);
 pub const KQUANT_TACTIC: (u32, u32) = (2, 4);
 pub const KQUANT_TACTIC_W32: (u32, u32) = (8, 1);
 pub const MATMUL_TILE_ROWS: u32 = 128;
-#[cfg(any(not(target_os = "macos"), feature = "vulkan"))]
-pub const MATMUL_TILE_COLS: u32 = 32;
-#[cfg(all(target_os = "macos", not(feature = "vulkan")))]
-pub const MATMUL_TILE_COLS: u32 = 64;
-#[cfg(any(not(target_os = "macos"), feature = "vulkan"))]
-pub const MOE_TILE_COLS: u32 = MATMUL_TILE_COLS;
-#[cfg(all(target_os = "macos", not(feature = "vulkan")))]
-pub const MOE_TILE_COLS: u32 = 32;
 const EXPERT_LPR: [u32; 3] = [64, 32, 16];
 
 pub struct Matvec {
@@ -39,6 +32,7 @@ pub struct Kernels {
     pub route: Pipeline,
     pub combine: Pipeline,
     pub sort: Pipeline,
+    pub to_half: Option<Pipeline>,
 }
 
 struct Kind<'a> {
@@ -54,6 +48,7 @@ fn matvec(ctx: &Context, kind: Kind, weights: &[Buffer], a: &Buffer) -> Result<M
     let (waves, rows) = kind.tactic;
     let build = |accum: u32, moe: u32, lpr: u32| -> Result<Pipeline> {
         let spec = match kind.matmul_type {
+            Some(ty) if HALF_INPUTS => vec![ty, accum, moe, 1],
             Some(ty) => vec![ty, accum, moe],
             None => vec![waves, accum, rows, moe, lpr],
         };
@@ -157,6 +152,7 @@ impl Kernels {
             route: build(pick(&s::MOE_ROUTE, &s::MOE_ROUTE_W32), &[a, a], 20, &[])?,
             combine: build(&s::MOE_COMBINE, &[a], 24, &[])?,
             sort: build(&s::MOE_SORT, &[a], 20, &[])?,
+            to_half: HALF_INPUTS.then(|| build(&TO_HALF, &[a, a, a], 24, &[])).transpose()?,
         })
     }
 

@@ -15,6 +15,10 @@ using namespace metal;
 constant uint TYPE = SPEC_0;
 constant bool ACCUM = (SPEC_1) != 0;
 constant bool MOE = (SPEC_2) != 0;
+#ifndef SPEC_3
+#define SPEC_3 0
+#endif
+constant bool X_HALF = (SPEC_3) != 0;
 
 constant uint TM = 128;
 constant uint NT = 256;
@@ -184,11 +188,15 @@ kernel void matmul(
         #pragma unroll
         for (uint h = 0; h < TN / (NT / 8); h++) {
             uint xb = (p.x_off + xr[h] * p.x_stride + k0 + xk) / 4;
-            float4 xa = x4[xb];
-            float4 xc = x4[xb + 1];
             threadgroup half4 *dst = (threadgroup half4 *)(xs + (xt + (NT / 8) * h) * XK + xk);
-            dst[0] = half4(xa);
-            dst[1] = half4(xc);
+            if (X_HALF) {
+                const device half4 *xh = (const device half4 *)x4;
+                dst[0] = xh[xb];
+                dst[1] = xh[xb + 1];
+            } else {
+                dst[0] = half4(x4[xb]);
+                dst[1] = half4(x4[xb + 1]);
+            }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 

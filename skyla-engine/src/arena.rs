@@ -19,6 +19,7 @@ pub struct Arena {
     pub up: u32,
     pub part: u32,
     pub last: u32,
+    pub half: u32,
     pub logits: u32,
     pub s_embd: u32,
     pub s_q: u32,
@@ -91,6 +92,8 @@ impl Arena {
             list: l.single(slots),
             stride: stride as u32,
         };
+        let widest = [c.n_embd, c.n_head * c.head_dim, c.n_ff].map(|w| w.next_multiple_of(64) * BATCH);
+        let half = l.single(widest.into_iter().chain([stride * slots]).max().unwrap_or(0) / 2 + 64);
 
         let buffer = ctx.alloc_host(l.size as u64 * 4)?;
         let kv_layout = KvLayout::new(precision, c.n_layer, max_ctx, c.n_head_kv * c.head_dim);
@@ -114,6 +117,7 @@ impl Arena {
             up,
             part,
             last,
+            half,
             logits,
             s_embd,
             s_q,

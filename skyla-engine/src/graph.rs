@@ -1,6 +1,7 @@
 use crate::arena::{Arena, ATTENTION_CHUNK, BATCH};
+use crate::backend::MATMUL_TILE_COLS;
 use crate::gpu::{Context, Recorder, Recording};
-use crate::kernels::{Kernels, MATMUL_TILE_COLS};
+use crate::kernels::Kernels;
 use crate::weights::{LayerWeights, QMatrix, Weights};
 use anyhow::Result;
 use skyla_gguf::DType;
@@ -31,6 +32,18 @@ impl Graph<'_> {
         self.r.dispatch_set(mv.pipeline(accum), m.buf, [groups, 1, cols], &push);
     }
 
+    fn input(&self, x: (u32, u32), width: usize, per_token: u32) -> (u32, u32) {
+        let Some(p) = self.k.to_half.as_ref().filter(|_| self.batched) else {
+            return x;
+        };
+        let (dst, stride) = (2 * self.a.half, width.next_multiple_of(64) as u32);
+        let push = [x.0, dst, width as u32, x.1, stride, per_token];
+        let rows = BATCH as u32 * per_token;
+        self.r.dispatch(p, [(width as u32 / 4).div_ceil(256), rows, 1], &push);
+        self.r.barrier();
+        (dst, stride)
+    }
+
     fn rmsnorm(&self, x: u32, w: u32, y: u32, tokens: u32) {
         let c = self.c;
         let push = [x, w, y, c.n_embd as u32, c.eps.to_bits(), self.a.s_embd];
@@ -47,9 +60,10 @@ impl Graph<'_> {
         let emb = |off| (off, a.s_embd);
         self.rmsnorm(a.x, lw.attn_norm, a.n, b);
         self.stage("rmsnorm");
-        self.matvec(lw.wq, emb(a.n), (a.q, a.s_q), false, bt);
-        self.matvec(lw.wk, emb(a.n), (a.k, a.s_kv), false, bt);
-        self.matvec(lw.wv, emb(a.n), (a.v, a.s_kv), false, bt);
+        let xn = self.input(emb(a.n), c.n_embd, 1);
+        self.matvec(lw.wq, xn, (a.q, a.s_q), false, bt);
+        self.matvec(lw.wk, xn, (a.k, a.s_kv), false, bt);
+        self.matvec(lw.wv, xn, (a.v, a.s_kv), false, bt);
         self.stage("matvec qkv");
         let heads = (c.n_head + 2 * c.n_head_kv) as u32;
         let push = [
@@ -92,7 +106,8 @@ impl Graph<'_> {
         let push = [a.part, a.attn, a.n_split, ATTENTION_CHUNK, a.s_part, a.s_q];
         self.r.dispatch(&self.k.merge, [c.n_head as u32, b, 1], &push);
         self.stage("attention merge");
-        self.matvec(lw.wo, (a.attn, a.s_q), emb(a.x), true, bt);
+        let xa = self.input((a.attn, a.s_q), c.n_head * c.head_dim, 1);
+        self.matvec(lw.wo, xa, emb(a.x), true, bt);
         self.stage("matvec o");
 
         self.rmsnorm(a.x, lw.ffn_norm, a.n, b);
@@ -101,14 +116,16 @@ impl Graph<'_> {
             self.moe(lw, router);
             return;
         }
-        self.matvec(lw.gate, emb(a.n), (a.gate, a.s_ff), false, bt);
-        self.matvec(lw.up, emb(a.n), (a.up, a.s_ff), false, bt);
+        let xn = self.input(emb(a.n), c.n_embd, 1);
+        self.matvec(lw.gate, xn, (a.gate, a.s_ff), false, bt);
+        self.matvec(lw.up, xn, (a.up, a.s_ff), false, bt);
         self.stage("matvec gate+up");
         let n_ff = c.n_ff as u32;
         let push = [a.gate, a.up, n_ff, a.s_ff];
         self.r.dispatch(&self.k.silu, [n_ff.div_ceil(256), b, 1], &push);
         self.stage("silu");
-        self.matvec(lw.down, (a.gate, a.s_ff), emb(a.x), true, bt);
+        let xg = self.input((a.gate, a.s_ff), c.n_ff, 1);
+        self.matvec(lw.down, xg, emb(a.x), true, bt);
         self.stage("matvec down");
     }
 }

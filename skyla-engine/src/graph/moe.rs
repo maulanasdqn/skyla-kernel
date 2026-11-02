@@ -1,6 +1,6 @@
 use super::Graph;
 use crate::arena::BATCH;
-use crate::kernels::MOE_TILE_COLS;
+use crate::backend::MOE_TILE_COLS;
 use crate::weights::{LayerWeights, QMatrix};
 use skyla_gguf::DType;
 
@@ -54,8 +54,9 @@ impl Graph<'_> {
             let push = [m.ids, m.table, m.list, n_expert, used];
             self.r.dispatch(&self.k.sort, [1, 1, 1], &push);
             self.stage("moe sort");
-            self.grouped(lw.gate, (a.n, a.s_embd), used, (m.gate, m.stride));
-            self.grouped(lw.up, (a.n, a.s_embd), used, (m.up, m.stride));
+            let xn = self.input((a.n, a.s_embd), c.n_embd, 1);
+            self.grouped(lw.gate, xn, used, (m.gate, m.stride));
+            self.grouped(lw.up, xn, used, (m.up, m.stride));
         } else {
             self.experts(lw.gate, (a.n, 0), (m.gate, m.stride));
             self.experts(lw.up, (a.n, 0), (m.up, m.stride));
@@ -66,7 +67,10 @@ impl Graph<'_> {
             .dispatch(&self.k.silu, [n.div_ceil(256), 1, 1], &[m.gate, m.up, n, 0]);
         self.stage("silu");
         match self.batched {
-            true => self.grouped(lw.down, (m.gate, m.stride), 1, (m.down, a.s_embd)),
+            true => {
+                let xg = self.input((m.gate, m.stride), c.n_ff_expert, used);
+                self.grouped(lw.down, xg, 1, (m.down, a.s_embd))
+            }
             false => self.experts(lw.down, (m.gate, m.stride), (m.down, a.s_embd)),
         }
         self.stage("experts down");
