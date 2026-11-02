@@ -4,15 +4,17 @@
 
 Skyla runs DeepSeek-R1-0528-Qwen3-8B on a Ryzen 7 7730U laptop with no discrete GPU,
 **1.9× faster than llama.cpp at generation and 1.7× faster at prompt processing** on the
-same hardware, and checks every kernel against a plain CPU reference. The same code runs
-on an Apple M5 MacBook through MoltenVK at **23 tok/s** on the 8B model. It ships a terminal
-chat and a browser chat UI (Rust/WebAssembly) that can switch between models at runtime.
+same hardware, and checks every kernel against a plain CPU reference. On an Apple M5
+MacBook it runs on a native Metal backend that multiplies on the GPU's neural accelerators:
+**26.5 tok/s generation and 483 tok/s prompt processing** on the same 8B model, within 9% of
+MLX at generation. It ships a terminal chat and a browser chat UI (Rust/WebAssembly) that
+can switch between models at runtime.
 
 It applies the idea behind [Netra Kernel](https://github.com/NetraRuntime/netra-kernel),
 compile for the exact serving contract and launch only specialized kernels, to a consumer
-laptop instead of a datacenter GPU. ROCm does not support this GPU, so the kernels are
-Vulkan compute shaders, specialized at pipeline creation and chosen by measurement on the
-target device.
+laptop instead of a datacenter GPU. ROCm does not support the Vega, so its kernels are
+Vulkan compute shaders; on Apple silicon every kernel has a Metal twin. Both are specialized
+at pipeline creation and chosen by measurement on the target device.
 
 ## Results
 
@@ -42,37 +44,51 @@ deliver for a 5 GB model.
 
 ### Apple M5
 
-macOS on an Apple M5 (10-core GPU, 16 GB unified memory), MoltenVK 1.4, the same
-256-token prompt, median of three runs:
+macOS 27 on an Apple M5 (10-core GPU, 16 GB unified memory), native Metal backend,
+against MLX 0.32 (`mlx_lm.benchmark`) on the same models: 512-token prompt, 128
+generated tokens, both warmed up, interleaved runs after a cool-down:
 
-| Model | Size | Generation | Prompt processing | vs. Vivobook |
-|---|---:|---:|---:|---|
-| Qwen3-4B-Instruct-2507 abliterated (Q4_K_M) | 2.5 GB | 38.4 tok/s | 275 tok/s | 3.2× / 2.3× |
-| DeepSeek-R1-0528-Qwen3-8B (Q4_K_M) | 4.7 GB | 23.1 tok/s | 121 tok/s | 3.0× / 2.0× |
-| Qwen3-0.6B (Q8_0) | 0.6 GB | 105 tok/s | 1196 tok/s | 1.9× / 1.7× |
+| Model | Size | Generation, Skyla | Generation, MLX | Prompt, Skyla | Prompt, MLX |
+|---|---:|---:|---:|---:|---:|
+| Qwen3-0.6B (Q8_0 / MLX 8-bit) | 0.6 GB | **160** | 167 | **4 084** | 8 065 |
+| Qwen3-4B-Instruct-2507 (Q4_K_M / MLX 4-bit) | 2.3 GB | **47.5** | 51.9 | **854** | 1 363 |
+| DeepSeek-R1-0528-Qwen3-8B (Q4_K_M / MLX 4-bit) | 4.7 GB | **26.5** | 28.9 | **483** | 737 |
+| Qwen3-30B-A3B-Instruct-2507 REAP-15B, MoE (Q4_K_M / MLX 4-bit) | 9.1 GB | **54.3** | 61.2 | **541** | 1 119 |
 
-`skyla bench-bw` measures 134 GB/s of GPU read bandwidth, so the 8B model generates at
-about 85% of the roofline (5.0 GB × 23.1 tok/s ≈ 116 GB/s). These numbers use the
-tactics tuned on the Vega; a sweep of the K-quant matvec tactics on the M5 was within
-run-to-run noise, so they have not been re-tuned yet. With the default `--kv v8` the
-engine agrees with the CPU reference to a worst logit error of 0.13 on R1-8B and 0.06 on
-the 4B model; the only differing top-1 tokens were near-ties in probability.
+The Skyla 4B run uses the abliterated (uncensored) build of the same model, with identical
+shapes; both 8B runs use the same Josiefied abliterated weights. All figures are tok/s.
+The same build through MoltenVK reached 24.0 / 178 tok/s on R1-8B, so the Metal backend is
+1.1× faster at generation and 2.7× at prompt processing.
+
+- **Generation** is bound by memory bandwidth. R1-8B reads its weights at ~127 GB/s
+  against 134 GB/s measured by `skyla bench-bw`. The 4–11% gap to MLX is roughly the size
+  difference between Q4_K_M, which keeps the output head and part of `down` in 6.5-bit
+  Q6_K, and MLX's uniform 4.5-bit weights.
+- **Prompt processing** multiplies on the M5's neural accelerators through the Metal 4
+  `matmul2d` tensor op, which more than doubled it over `simdgroup_matrix`. It is at 51–66%
+  of MLX for dense models and 48% for MoE, where each expert sees only ~16 tokens of a
+  128-token chunk.
+
+These four models and Qwen3-0.6B Q4_K_M match the CPU reference with no top-1
+disagreements (worst logit error 0.08–0.50 with the default `--kv v8`).
 
 ## Target machines
 
 | | ASUS Vivobook M1405YA (primary) | MacBook with Apple M5 |
 |---|---|---|
-| OS | Windows 11, AMD driver 23.19 | macOS 27, MoltenVK 1.4 (Vulkan on Metal) |
+| OS | Windows 11, AMD driver 23.19 | macOS 27 |
+| Backend | Vulkan 1.3 | Metal 4 (Vulkan through MoltenVK with `--features vulkan`) |
 | CPU | Ryzen 7 7730U (Zen 3, 8 cores, AVX2) | Apple M5 |
-| GPU | Radeon Vega 8 iGPU (`gfx90c`, 8 CU, wave64, 32 KiB LDS) | Apple M5 10-core GPU (32-lane SIMD groups, 32 KiB threadgroup memory) |
+| GPU | Radeon Vega 8 iGPU (`gfx90c`, 8 CU, wave64, 32 KiB LDS) | Apple M5 10-core GPU (32-lane SIMD groups, 32 KiB threadgroup memory, neural accelerator per core) |
 | Memory | 40 GB DDR4-3200 shared by CPU and GPU (8 + 32 GB modules) | 16 GB unified memory, 134 GB/s measured GPU read |
-| Largest buffer | ~2 GiB allocation | 4 GiB storage-buffer range |
+| Largest buffer | ~2 GiB allocation | 4 GiB (kept for 32-bit indexing) |
 
 The Vega has FP16 arithmetic and 8/16-bit storage, but no int8 dot product and no matrix
 cores. Every design choice below follows from that and from the shared DDR4. The kernels
-were designed and tuned on the Vega; the M5 runs the same kernels with a 32-lane variant
-of every kernel that reduces across a subgroup, chosen at startup from the device's
-subgroup size, so one build serves both machines.
+were designed and tuned on the Vega. On macOS the engine swaps its GPU layer for
+`skyla-metal`, which runs an MSL twin of every kernel with the same bindings and graph,
+32-lane reductions, an M5-tuned decode tactic and a prefill GEMM on the neural
+accelerators.
 
 ## Quick start
 
@@ -91,14 +107,18 @@ winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --add 
 
 macOS (Apple silicon, checked on the M5):
 
+- macOS 26 or later (Metal 4, for the tensor ops used by prefill)
 - [Rust](https://rustup.rs/) (stable)
-- MoltenVK, the Vulkan loader and `glslc` from Homebrew
+- `glslc` from Homebrew, still needed to build the SPIR-V kernels
+- Optional: MoltenVK and the Vulkan loader, for `--features vulkan`, `skyla probe` and
+  `skyla bench-bw`
 
 ```sh
-brew install molten-vk vulkan-loader shaderc
+brew install shaderc
+brew install molten-vk vulkan-loader   # optional
 ```
 
-`skyla probe` should report `Apple M5` with subgroup size 32.
+The Metal kernels are compiled from source when a model loads, so Xcode is not needed.
 
 ### Build
 
@@ -108,9 +128,11 @@ cd skyla-kernel
 cargo build --release
 ```
 
-The build is the same on both machines. `build.rs` compiles every shader in
+The command is the same on both machines. `build.rs` compiles every shader in
 `skyla-shaders/shaders` with `glslc`, and the subgroup kernels twice (64 and 32 lanes);
-set `GLSLC` if it is not found through `VULKAN_SDK` or `PATH`.
+set `GLSLC` if it is not found through `VULKAN_SDK` or `PATH`. On macOS the engine uses
+Metal; `cargo build --release --features skyla-engine/vulkan` builds the MoltenVK path
+instead, for A/B runs.
 
 ### Get models
 
@@ -222,8 +244,9 @@ replay    per token: dequantize the embedding row on the CPU, replay, read logit
 
 | Kernel | Design |
 |---|---|
-| Matrix-vector (decode) | One subgroup (wave64 on the Vega, 32 lanes on the M5) per group of rows; each lane streams 16 bytes of weights per step and keeps a slice of the input in registers across rows. Per-format tactics: Q4_K/Q6_K 2 waves × 4 rows, Q8_0 4 waves × 2 rows |
-| Matrix-matrix (prefill) | 128 rows × 32 tokens per workgroup (a 128-token chunk is 4 column tiles; for MoE, one grid row per expert over the tokens routed to it); each 64-wide K step dequantizes once into LDS as f16; 4×4 micro-tiles accumulate with packed f16 FMA inside a step and f32 across steps |
+| Matrix-vector (decode) | One subgroup (wave64 on the Vega, 32 lanes on the M5) per group of rows; each lane streams 16 bytes of weights per step and keeps a slice of the input in registers across rows. Per-format tactics: Q4_K/Q6_K 2 waves × 4 rows on the Vega and 8 SIMD groups × 1 row on the M5, Q8_0 4 × 2 |
+| Matrix-matrix (prefill), Vega | 128 rows × 32 tokens per workgroup (a 128-token chunk is 4 column tiles; for MoE, one grid row per expert over the tokens routed to it); each 64-wide K step dequantizes once into LDS as f16; 4×4 micro-tiles accumulate with packed f16 FMA inside a step and f32 across steps |
+| Matrix-matrix (prefill), M5 | 128 rows × 64 tokens per threadgroup (32 for MoE experts); each 64-wide K step dequantizes into threadgroup memory as f16 and multiplies with the Metal 4 `matmul2d` tensor op on the neural accelerators, accumulating in a cooperative tensor across K |
 | Attention | Split-K decode attention (64-position chunks) with online softmax; one workgroup serves all query heads of a KV head (GQA); causal per token in prefill |
 | QK-norm + RoPE | Fused per head, writes the KV cache, quantizes keys/values in registers when int8 |
 | RMSNorm, SiLU·mul, merge | Small kernels; RMSNorm uses one 1024-thread workgroup |
@@ -262,8 +285,9 @@ token and the largest logit difference at every step, with the Vulkan validation
   probability. llama.cpp's CPU backend disagrees with both on this model.
 - The GPU engine matches the reference on every greedy token in the recorded checks;
   the worst logit difference with the default settings is under 0.2. On the M5 the
-  32-lane kernels give 0.13 on R1-8B and Qwen3-0.6B, and runs clean under the
-  validation layer; the only top-1 differences seen were near-ties in probability.
+  Metal backend matches the reference with no top-1 disagreements on all five test
+  models, including the MoE; the MoltenVK path also runs clean under the validation
+  layer.
 - The tokenizer produces ids identical to `llama-tokenize` on emoji, CJK, code, CRLF,
   contractions, numbers and full chat prompts.
 
@@ -286,12 +310,25 @@ token and the largest logit difference at every step, with the Vulkan validation
   26); the subgroup kernels now take the lane count as a build-time variant.
 - **MoltenVK cannot timestamp around a single dispatch.** `bench-bw` first reported
   6500 GB/s on the M5; it now times consecutive bottom-of-pipe stamps (134 GB/s).
+- **`simdgroup_matrix` tops out near 3 TFLOPS on the M5.** With it, 80% of prefill GEMM
+  time was the multiply itself, whatever the tile shape or alignment; the Metal 4
+  `matmul2d` tensor op runs on the neural accelerators and more than doubled prefill.
+  Once the multiply was fast, re-reading f32 activations for every row tile was the next
+  largest cost, which 128-row tiles halved.
+- **A 9 GB model on a 16 GB Mac is held once, not twice.** Weights are read with
+  `F_NOCACHE` straight into GPU buffers instead of being copied from the memory map, and
+  loading the MoE went from 14 s to 4.2 s. When other apps already fill memory, the first
+  prompt after loading it can still take seconds while macOS decompresses weight pages.
+- **A hot or charging MacBook drifts by up to 30%.** M5 numbers come from interleaved
+  runs after a cool-down; `skyla run --warmup` runs the prompt once first, as
+  `mlx_lm.benchmark` does.
 
 ## Repository layout
 
 | Crate | Role |
 |---|---|
 | `skyla-vk` | Minimal Vulkan layer: device, buffers, specialized pipelines with several descriptor sets, recorded and replayed command buffers, GPU timestamps |
+| `skyla-metal` | Native Metal layer with the same surface, used on macOS, and the MSL twin of every kernel (`kernels/`, see its `CONVENTIONS.md`) |
 | `skyla-shaders` | GLSL compute kernels, compiled to SPIR-V at build time, with 64- and 32-lane variants of the subgroup kernels |
 | `skyla-gguf` | Memory-mapped GGUF reader and F32/F16/Q8_0/Q4_K/Q6_K dequantization |
 | `skyla-ref` | f32 CPU reference forward pass and YaRN RoPE tables |
@@ -316,14 +353,16 @@ which also holds every measurement behind the numbers above.
   prefill chunk reads the KV cache separately.
 - Earlier turns keep their `<think>` text in context, unlike the reference chat template,
   to avoid re-processing them.
-- Tuned on one laptop. It runs on Vulkan 1.3 GPUs with FP16, 8/16-bit storage and a
-  subgroup size of 32 or 64 (checked on the Vega 8 and the Apple M5), but its tactics were
-  chosen on the Vega; the M5 has not been re-tuned.
+- Tuned on two machines. It runs on Vulkan 1.3 GPUs with FP16, 8/16-bit storage and a
+  subgroup size of 32 or 64, and on Apple silicon with Metal 4; only the Vega 8 and the
+  M5 have been checked. Earlier Apple GPUs should run the Metal backend but are untested.
+- On the M5, prompt processing is still behind MLX (51–66% dense, 48% MoE): load,
+  dequantization and the multiply run one after another in each K step.
 
 ## Roadmap
 
-See [docs/roadmap.md](docs/roadmap.md). Next: sharing KV
-reads across a prefill chunk, an OpenAI-compatible endpoint for game engines, and a
+See [docs/roadmap.md](docs/roadmap.md). Next: f16 activations and a larger prefill chunk
+for MoE on the M5, sharing KV reads across a prefill chunk, an OpenAI-compatible endpoint for game engines, and a
 `skyla compile` step that runs the tactic sweeps on the target and stores the evidence.
 
 ## License
