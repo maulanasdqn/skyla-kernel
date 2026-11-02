@@ -19,7 +19,7 @@ targets:
     info:
       path: Skyla/Info.plist
       properties:
-        CFBundleDisplayName: Skyla
+        CFBundleDisplayName: Skyla Runtime
         UILaunchScreen: {}
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
@@ -34,7 +34,7 @@ targets:
         LIBRARY_SEARCH_PATHS: $(SRCROOT)/../target/aarch64-apple-ios/release
         OTHER_LDFLAGS: -lskyla_ffi
         ENABLE_USER_SCRIPT_SANDBOXING: NO
-        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     dependencies:
       - sdk: Metal.framework
       - sdk: Foundation.framework

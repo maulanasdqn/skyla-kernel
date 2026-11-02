@@ -20,7 +20,7 @@ struct SettingsView: View {
                         .lineLimit(3...8)
                 }
                 Section {
-                    Text("Context: \(ChatModel.context) tokens. Put your own .gguf files in the Skyla folder of the Files app to load them.")
+                    Text("Context: \(ChatModel.context) tokens. Put your own .gguf files in the Skyla Runtime folder of the Files app to load them.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

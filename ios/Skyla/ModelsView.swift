@@ -28,7 +28,7 @@ struct ModelsView: View {
                 } header: {
                     Text("Models")
                 } footer: {
-                    Text("Add your own .gguf files to the Skyla folder in the Files app. Swipe left to delete a downloaded model.")
+                    Text("Add your own .gguf files to the Skyla Runtime folder in the Files app. Swipe left to delete a downloaded model.")
                 }
             }
             .navigationTitle("Choose a model")

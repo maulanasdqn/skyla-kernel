@@ -20,6 +20,20 @@ enum Models {
 
     static let catalog: [ModelOption] = [
         ModelOption(
+            id: "sea-lion-v4-4b-decensored-q4_k_m.gguf",
+            name: "SEA-LION v4 4B Decensored",
+            short: "SEA-LION 4B",
+            detail: "Uncensored · trained for Indonesian and Southeast Asian languages · best for roleplay",
+            url: URL(string: "https://huggingface.co/mradermacher/Qwen-SEA-LION-v4-4B-VL-Magic_decensored-GGUF/resolve/main/Qwen-SEA-LION-v4-4B-VL-Magic_decensored.Q4_K_M.gguf"),
+            sizeGB: 2.5),
+        ModelOption(
+            id: "qwen3-4b-polaris-heretic-q4_k_m.gguf",
+            name: "Qwen3 4B Polaris Heretic Abliterated",
+            short: "Polaris 4B",
+            detail: "Uncensored · English-leaning roleplay",
+            url: URL(string: "https://huggingface.co/mradermacher/Qwen3-4B-Instruct-2507-Polaris-Alpha-Distill-Heretic-Abliterated-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Polaris-Alpha-Distill-Heretic-Abliterated.Q4_K_M.gguf"),
+            sizeGB: 2.5),
+        ModelOption(
             id: "qwen3-4b-2507-abliterated-q4_k_m.gguf",
             name: "Qwen3 4B Instruct 2507 Abliterated",
             short: "Qwen3 4B",
