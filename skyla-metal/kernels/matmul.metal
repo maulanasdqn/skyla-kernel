@@ -16,15 +16,21 @@ constant uint TYPE = SPEC_0;
 constant bool ACCUM = (SPEC_1) != 0;
 constant bool MOE = (SPEC_2) != 0;
 
-constant uint TM = 64;
-constant uint NT = 128;
+constant uint TM = 128;
+constant uint NT = 256;
+#ifndef TILE_N_MOE
+#define TILE_N_MOE 32
+#endif
+#if SPEC_2
+#define TILE_N TILE_N_MOE
+#endif
 #ifndef TILE_N
 #define TILE_N 64
 #endif
 constant uint TN = TILE_N;
 constant uint TK = 64;
 constant uint PAD = TK / 2 + 4;
-constant uint XN = TN + 8;
+constant uint XK = TK + 8;
 
 struct Push {
     uint o0;
@@ -130,7 +136,7 @@ kernel void matmul(
     uint3 lid  [[thread_position_in_threadgroup]])
 {
     constexpr uint WS_BYTES = TM * PAD * 4;
-    constexpr uint XS_BYTES = TK * XN * 2;
+    constexpr uint XS_BYTES = TN * XK * 2;
     constexpr uint STAGE_BYTES = TM * TN * 4;
     constexpr uint SMEM_BYTES = WS_BYTES + XS_BYTES > STAGE_BYTES ? WS_BYTES + XS_BYTES : STAGE_BYTES;
     threadgroup uchar smem[SMEM_BYTES];
@@ -148,12 +154,12 @@ kernel void matmul(
     uint n_tok = min(n_all - col0, TN);
     uint list = p.list_off + col0 + (MOE ? ctl[p.table_off + 2 * e + 1] : 0);
     uint base = MOE ? e * p.n_out : 0;
-    constexpr auto desc = mpp::tensor_ops::matmul2d_descriptor(int(TM), int(TN), int(TK), false, false, false,
+    constexpr auto desc = mpp::tensor_ops::matmul2d_descriptor(int(TM), int(TN), int(TK), false, true, false,
         mpp::tensor_ops::matmul2d_descriptor::mode::multiply_accumulate);
     mpp::tensor_ops::matmul2d<desc, execution_simdgroups<NT / 32>> op;
     using Tile = tensor<threadgroup half, dextents<int32_t, 2>, tensor_inline>;
     Tile ta((threadgroup half *)ws, dextents<int32_t, 2>(TK, TM), array<int32_t, 2>{1, int(2 * PAD)});
-    Tile tb(xs, dextents<int32_t, 2>(TN, TK), array<int32_t, 2>{1, int(XN)});
+    Tile tb(xs, dextents<int32_t, 2>(TK, TN), array<int32_t, 2>{1, int(XK)});
     auto acc = op.get_destination_cooperative_tensor<Tile, Tile, float>();
     #pragma unroll
     for (uint16_t i = 0; i < acc.get_capacity(); ++i) {
@@ -167,24 +173,22 @@ kernel void matmul(
     uint grow = base + min(row0 + lr, p.n_out - 1);
     uint xt = t / 8;
     uint xk = (t % 8) * 8;
-    uint xr[TN / 16];
+    uint xr[TN / (NT / 8)];
     #pragma unroll
-    for (uint h = 0; h < TN / 16; h++) {
-        xr[h] = MOE ? ctl[list + min(xt + 16 * h, n_tok - 1)] / p.x_div : col0 + xt + 16 * h;
+    for (uint h = 0; h < TN / (NT / 8); h++) {
+        xr[h] = MOE ? ctl[list + min(xt + (NT / 8) * h, n_tok - 1)] / p.x_div : col0 + xt + (NT / 8) * h;
     }
 
     for (uint k0 = 0; k0 < p.n_in; k0 += TK) {
         dequant(w, wd, p, ws, grow, k0 + hk * 32, lr * PAD + hk * 16);
         #pragma unroll
-        for (uint h = 0; h < TN / 16; h++) {
+        for (uint h = 0; h < TN / (NT / 8); h++) {
             uint xb = (p.x_off + xr[h] * p.x_stride + k0 + xk) / 4;
             float4 xa = x4[xb];
             float4 xc = x4[xb + 1];
-            #pragma unroll
-            for (uint i = 0; i < 4; i++) {
-                xs[(xk + i) * XN + xt + 16 * h] = half(xa[i]);
-                xs[(xk + 4 + i) * XN + xt + 16 * h] = half(xc[i]);
-            }
+            threadgroup half4 *dst = (threadgroup half4 *)(xs + (xt + (NT / 8) * h) * XK + xk);
+            dst[0] = half4(xa);
+            dst[1] = half4(xc);
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 

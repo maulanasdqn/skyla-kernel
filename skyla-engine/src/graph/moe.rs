@@ -1,6 +1,6 @@
 use super::Graph;
 use crate::arena::BATCH;
-use crate::kernels::MATMUL_TILE_COLS;
+use crate::kernels::MOE_TILE_COLS;
 use crate::weights::{LayerWeights, QMatrix};
 use skyla_gguf::DType;
 
@@ -34,7 +34,7 @@ impl Graph<'_> {
         self.r.dispatch_set(
             mv.grouped(),
             m.buf,
-            [groups, n_expert, BATCH as u32 / MATMUL_TILE_COLS],
+            [groups, n_expert, BATCH as u32 / MOE_TILE_COLS],
             &push,
         );
     }

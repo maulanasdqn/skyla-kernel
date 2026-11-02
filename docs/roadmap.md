@@ -415,13 +415,23 @@ every other platform is unchanged.
 - A recording is replayed into one concurrent compute encoder with a buffer memory
   barrier wherever the Vulkan graph has one; encoding 831 dispatches for an R1-8B
   token takes ~0.15 ms.
-- The prefill GEMM dequantizes K-quant tiles (64 rows × 64 K) into threadgroup memory
+- The prefill GEMM dequantizes K-quant tiles (128 rows × 64 K) into threadgroup memory
   and multiplies them with the Metal 4 `matmul2d` tensor op, which runs on the M5's
-  per-core neural accelerators, accumulating 64 tokens in a cooperative tensor across
-  the K loop. `simdgroup_matrix` topped out near 3 TFLOPS: with it, 80% of GEMM time
+  per-core neural accelerators, accumulating 64 tokens (32 for MoE experts) in a
+  cooperative tensor across the K loop. `simdgroup_matrix` topped out near 3 TFLOPS: with it, 80% of GEMM time
   was the multiply itself, and neither aligned strides, a K-major token tile nor
   smaller tiles moved it. 64-token tiles beat 32 (dequantizing each weight half as
   often) and matched 128.
+- With the multiply on the accelerators, a split of R1-8B gate+up time (by compiling
+  parts out) showed activation-tile loads, not dequantization, as the largest piece:
+  every 64-row tile re-read the f32 activations and stored them transposed. 128-row
+  tiles with 8 SIMD groups and a token-major tile (transposed right operand) cut
+  loads from ~51 to ~26 ms per chunk; the multiply is then ~60 ms and dequant ~25 ms.
+  Rejected: double buffering with K = 32 (+16%, the accelerator prefers K = 64) and
+  `relaxed_precision` (+5%).
+- MoE experts see ~16 tokens each per 128-token chunk, so expert GEMMs use 32-token
+  tiles instead of 64 (+21% MoE prefill). A larger prefill chunk would help MoE most,
+  but the split-K attention partials grow with it (~4 MB per token at 16k context).
 - Weights are read with `F_NOCACHE` into the GPU buffers instead of being copied from
   the memory map, so a model is not held twice (MoE REAP-15B load: 14 s → 4.2 s).
 - K-quant decode uses 8 SIMD groups × 1 row on 32-lane GPUs (GPU time per R1-8B token
@@ -431,16 +441,15 @@ All five test models match the CPU reference with 0 top-1 disagreements.
 
 | Apple M5, 512-token prompt + 128 tokens, warm | MoltenVK | Metal | MLX 0.32 |
 |---|---:|---:|---:|
-| Qwen3-0.6B Q8_0, decode / prefill (tok/s) | 104 / 1 780 | **160 / 4 023** | 166 / 7 756 |
-| Qwen3-4B Q4_K_M | 41.8 / 324 | **47.1 / 816** | 51.2 / 1 310 |
-| R1-8B Q4_K_M | 24.0 / 178 | **26.2 / 464** | 28.3 / 724 |
-| MoE REAP-15B Q4_K_M | 38 / 250 | **52.3 / 448** | 58.1 / 1 101 |
+| Qwen3-0.6B Q8_0, decode / prefill (tok/s) | 104 / 1 780 | **160 / 4 084** | 167 / 8 065 |
+| Qwen3-4B Q4_K_M | 41.8 / 324 | **47.5 / 854** | 51.9 / 1 363 |
+| R1-8B Q4_K_M | 24.0 / 178 | **26.5 / 483** | 28.9 / 737 |
+| MoE REAP-15B Q4_K_M | 38 / 250 | **54.3 / 541** | 61.2 / 1 119 |
 
 Decode is within 4–10% of MLX, roughly the size difference between Q4_K_M (Q6_K output
 head and part of `down`) and MLX's uniform 4.5-bit weights; R1-8B decode reads at ~127
-GB/s against a measured 134 GB/s. Dense prefill is at 62–64% of MLX and MoE prefill at
-41%; with the multiply on the accelerators, K-quant dequantization is now the larger
-share of GEMM time.
+GB/s against a measured 134 GB/s. Dense prefill is at 51–66% of MLX and MoE prefill at
+48%.
 
 Measurement notes: run-to-run results on this laptop drift by up to 30% once it is
 hot (and while it charges), so A/B results come from ABBA-ordered runs after a
