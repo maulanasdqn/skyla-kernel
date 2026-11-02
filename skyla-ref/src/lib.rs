@@ -36,8 +36,8 @@ impl Config {
     pub fn from_gguf(g: &Gguf) -> Result<Self> {
         let arch = g.meta_str("general.architecture")?;
         ensure!(
-            matches!(arch, "qwen3" | "qwen3moe"),
-            "unsupported architecture {arch} (qwen3 and qwen3moe only)"
+            matches!(arch, "qwen3" | "qwen3moe" | "qwen3vl"),
+            "unsupported architecture {arch} (qwen3, qwen3moe and qwen3vl text only)"
         );
         let k = |s: &str| format!("{arch}.{s}");
         let opt = |s: &str| g.meta_u64(&k(s)).map_or(0, |v| v as usize);
