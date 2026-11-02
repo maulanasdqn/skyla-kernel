@@ -5,3 +5,6 @@
 *.gguf
 *.safetensors
 /skyla-web/dist
+/ios/build
+/ios/Skyla.xcodeproj
+/ios/Skyla/Info.plist
