@@ -6,6 +6,7 @@
 layout(local_size_x = 256) in;
 layout(constant_id = 0) const uint TYPE = 1;
 layout(constant_id = 1) const bool ACCUM = false;
+layout(constant_id = 2) const bool MOE = false;
 
 const uint TM = 128;
 const uint TN = 32;
@@ -29,6 +30,9 @@ layout(push_constant) uniform Push {
     uint n_out;
     uint x_stride;
     uint y_stride;
+    uint table_off;
+    uint list_off;
+    uint x_div;
 } p;
 
 shared f16vec2 ws[TM * PAD];
@@ -109,7 +113,15 @@ void dequant(uint row, uint s, uint dst) {
 void main() {
     uint t = gl_LocalInvocationID.x;
     uint row0 = gl_WorkGroupID.x * TM;
-    uint n_tok = min(ctl[2], TN);
+    uint e = gl_WorkGroupID.y;
+    uint n_all = MOE ? ctl[p.table_off + 2 * e] : ctl[2];
+    uint col0 = gl_WorkGroupID.z * TN;
+    if (col0 >= n_all) {
+        return;
+    }
+    uint n_tok = min(n_all - col0, TN);
+    uint list = p.list_off + col0 + (MOE ? ctl[p.table_off + 2 * e + 1] : 0);
+    uint base = MOE ? e * p.n_out : 0;
     uint rg = t % 32;
     uint tg = t / 32;
 
@@ -120,13 +132,14 @@ void main() {
 
     uint lr = t / 2;
     uint hk = t % 2;
-    uint grow = min(row0 + lr, p.n_out - 1);
+    uint grow = base + min(row0 + lr, p.n_out - 1);
     uint xt = t / 8;
     uint xk = (t % 8) * 8;
+    uint xr = MOE ? ctl[list + min(xt, n_tok - 1)] / p.x_div : col0 + xt;
 
     for (uint k0 = 0; k0 < p.n_in; k0 += TK) {
         dequant(grow, k0 + hk * 32, lr * PAD + hk * 16);
-        uint xb = (p.x_off + xt * p.x_stride + k0 + xk) / 4;
+        uint xb = (p.x_off + xr * p.x_stride + k0 + xk) / 4;
         vec4 xa = x4[xb];
         vec4 xc = x4[xb + 1];
         xs[xt * PAD + xk / 2] = f16vec2(xa.xy);
@@ -163,7 +176,8 @@ void main() {
             uint row = row0 + rg + 32 * r;
             uint tok = 4 * tg + j;
             if (row < p.n_out && tok < n_tok) {
-                uint o = p.y_off + tok * p.y_stride + row;
+                uint yr = MOE ? ctl[list + tok] : col0 + tok;
+                uint o = p.y_off + yr * p.y_stride + row;
                 y[o] = ACCUM ? y[o] + acc[r * 4 + j] : acc[r * 4 + j];
             }
         }

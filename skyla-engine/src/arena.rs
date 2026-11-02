@@ -5,7 +5,7 @@ use skyla_ref::Config;
 use skyla_vk::{Buffer, BufferUsageFlags, Context};
 
 pub const ATTENTION_CHUNK: u32 = 64;
-pub const BATCH: usize = 32;
+pub const BATCH: usize = 128;
 
 pub struct Arena {
     pub buffer: Buffer,
@@ -40,6 +40,8 @@ pub struct MoeRegions {
     pub gate: u32,
     pub up: u32,
     pub down: u32,
+    pub table: u32,
+    pub list: u32,
     pub stride: u32,
 }
 
@@ -78,13 +80,16 @@ impl Arena {
         let last = l.single(c.n_embd);
         let logits = l.single(c.n_vocab);
         let stride = c.n_ff_expert.next_multiple_of(64);
+        let slots = c.n_expert_used * BATCH;
         let moe = MoeRegions {
-            logits: l.single(c.n_expert),
-            ids: l.single(c.n_expert_used),
-            weights: l.single(c.n_expert_used),
-            gate: l.single(stride * c.n_expert_used),
-            up: l.single(stride * c.n_expert_used),
-            down: l.single(s_embd as usize * c.n_expert_used),
+            logits: l.single(c.n_expert * BATCH),
+            ids: l.single(slots),
+            weights: l.single(slots),
+            gate: l.single(stride * slots),
+            up: l.single(stride * slots),
+            down: l.single(s_embd as usize * slots),
+            table: l.single(2 * c.n_expert),
+            list: l.single(slots),
             stride: stride as u32,
         };
 

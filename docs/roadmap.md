@@ -103,7 +103,7 @@ exceeds 200 lines.
   KV cache with per-tensor precision choice and a 16k default context (done).
 - **M6 — Prefill.** Batched matrix-matrix kernels for prompt processing (done).
 - **M7 — MoE.** Expert routing and grouped expert matrix-vector for Qwen3-30B-A3B
-  (decode done; batched MoE prefill open).
+  (done: decode and batched prefill).
 
 ## M7 result: Qwen3-30B-A3B (qwen3moe)
 
@@ -135,7 +135,30 @@ Bugs found by bisecting with a 1-layer model and comparing GPU arena values with
 reference: the router's softmax overwrote its own maximum (`top[0]`) in the first loop
 iteration, which left every expert choice right but every weight wrong.
 
-Prompt processing for MoE models still feeds one token per step (~12 tok/s).
+### Batched MoE prefill
+
+A prefill chunk routes every token at once (router logits on an 
+_expert × tokens
+grid, one top-k workgroup per token), then a single-workgroup sort groups the
+(token, slot) pairs by expert and writes a count/offset table plus the sorted list.
+The prefill GEMM gained a MOE specialization: the grid's second dimension is the
+expert, each workgroup gathers its columns through the sorted list (gate/up read the
+token's normalized hidden state, down reads the slot's activation) and scatters its
+outputs back by slot. Experts nobody picked exit at once.
+
+With 32-token chunks the expert GEMMs read all ~16 GB of expert weights per chunk at
+~36 GB/s, so the chunk grew to 128 tokens; the GEMM now tiles columns in 32-token steps
+along the grid's third dimension, which dense models use too.
+
+| Prompt processing, Qwen3-30B-A3B (512-token prompt) | tok/s |
+|---|---:|
+| One token per decode step | 14.3 |
+| Grouped expert GEMM, 32-token chunks | 46.8 |
+| **128-token chunks** | **95** |
+
+Dense prefill is unchanged by the larger chunk (Qwen3-4B 116 tok/s, R1-8B 64 tok/s on a
+512-token prompt). All four models match the CPU reference with 0 top-1 disagreements
+on a 171-token prompt that spans two chunks.
 
 ## Baseline (llama.cpp b12032, Qwen3-0.6B Q8_0)
 
@@ -344,7 +367,7 @@ results for the upper half of a 64-lane wave, which zeroed outlier keys. The blo
 maximum is now an explicit `subgroupShuffleXor` butterfly over offsets 1–16.
 
 Prefill slows with context (39.7 tok/s at 4k vs 60 at short prompts) because each of
-the 32 batched queries reads the whole KV cache separately; sharing KV reads across
+the batched queries reads the whole KV cache separately; sharing KV reads across
 the batch is the next prefill improvement.
 
 ## Port: Apple M5 through MoltenVK

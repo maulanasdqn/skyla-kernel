@@ -15,12 +15,14 @@ layout(push_constant) uniform Push {
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
+    uint tok = gl_WorkGroupID.y;
     if (i >= p.n) {
         return;
     }
     float sum = 0.0;
     for (uint s = 0; s < p.n_used; s++) {
-        sum += a[p.weights_off + s] * a[p.y_off + s * p.stride + i];
+        uint slot = tok * p.n_used + s;
+        sum += a[p.weights_off + slot] * a[p.y_off + slot * p.stride + i];
     }
-    a[p.x_off + i] += sum;
+    a[p.x_off + tok * p.stride + i] += sum;
 }

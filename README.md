@@ -31,7 +31,7 @@ Other models on the same laptop (Skyla, 256-token prompt):
 
 | Model | Size | Generation | Prompt processing | Notes |
 |---|---:|---:|---:|---|
-| Qwen3-30B-A3B-Instruct-2507 (Q4_K_M, MoE) | 17.3 GB | 14.1 tok/s | ~12 tok/s | 128 experts, 8 active; best quality per token on this laptop. Prompt is fed one token at a time for now |
+| Qwen3-30B-A3B-Instruct-2507 (Q4_K_M, MoE) | 17.3 GB | 14.1 tok/s | 95 tok/s | 128 experts, 8 active; best quality per token on this laptop |
 | Qwen3-4B-Instruct-2507 (Q4_K_M) | 2.3 GB | 12.0 tok/s | 118 tok/s | No thinking; good for fast role-play and game characters |
 | DeepSeek-R1-0528-Qwen3-8B (Q4_K_M) | 4.7 GB | 7.6 tok/s | 60 tok/s | Reasoning model; writes a `<think>` section first |
 | Qwen3-0.6B (Q8_0) | 0.6 GB | 55 tok/s | 686 tok/s | Development model (llama.cpp: 44.5 / 436) |
@@ -211,7 +211,7 @@ load      weights repacked into kernel-native layouts across buffers sized to th
           RoPE/YaRN frequencies and norm weights precomputed into tables
       │
       ▼
-record    one command buffer for a decode step, one for a 32-token prefill chunk;
+record    one command buffer for a decode step, one for a 128-token prefill chunk;
           token, position and chunk size live in GPU memory, so recordings never change
       │
       ▼
@@ -223,7 +223,7 @@ replay    per token: dequantize the embedding row on the CPU, replay, read logit
 | Kernel | Design |
 |---|---|
 | Matrix-vector (decode) | One subgroup (wave64 on the Vega, 32 lanes on the M5) per group of rows; each lane streams 16 bytes of weights per step and keeps a slice of the input in registers across rows. Per-format tactics: Q4_K/Q6_K 2 waves × 4 rows, Q8_0 4 waves × 2 rows |
-| Matrix-matrix (prefill) | 128 rows × 32 tokens per workgroup; each 64-wide K step dequantizes once into LDS as f16; 4×4 micro-tiles accumulate with packed f16 FMA inside a step and f32 across steps |
+| Matrix-matrix (prefill) | 128 rows × 32 tokens per workgroup (a 128-token chunk is 4 column tiles; for MoE, one grid row per expert over the tokens routed to it); each 64-wide K step dequantizes once into LDS as f16; 4×4 micro-tiles accumulate with packed f16 FMA inside a step and f32 across steps |
 | Attention | Split-K decode attention (64-position chunks) with online softmax; one workgroup serves all query heads of a KV head (GQA); causal per token in prefill |
 | QK-norm + RoPE | Fused per head, writes the KV cache, quantizes keys/values in registers when int8 |
 | RMSNorm, SiLU·mul, merge | Small kernels; RMSNorm uses one 1024-thread workgroup |
@@ -310,10 +310,10 @@ which also holds every measurement behind the numbers above.
 ## Limitations
 
 - `qwen3` and `qwen3moe` models (head size 128) in three weight formats (Q8_0, Q4_K,
-  Q6_K). MoE models decode on the GPU but process prompts one token at a time.
+  Q6_K).
 - Batch size 1 for generation; one conversation at a time, shared by every browser tab.
 - Prefill slows on long contexts (about 40 tok/s at 4k tokens) because each query in a
-  32-token chunk reads the KV cache separately.
+  prefill chunk reads the KV cache separately.
 - Earlier turns keep their `<think>` text in context, unlike the reference chat template,
   to avoid re-processing them.
 - Tuned on one laptop. It runs on Vulkan 1.3 GPUs with FP16, 8/16-bit storage and a
@@ -322,7 +322,7 @@ which also holds every measurement behind the numbers above.
 
 ## Roadmap
 
-See [docs/roadmap.md](docs/roadmap.md). Next: batched prefill for MoE models, sharing KV
+See [docs/roadmap.md](docs/roadmap.md). Next: sharing KV
 reads across a prefill chunk, an OpenAI-compatible endpoint for game engines, and a
 `skyla compile` step that runs the tactic sweeps on the target and stores the evidence.
 

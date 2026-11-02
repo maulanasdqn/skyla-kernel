@@ -7,6 +7,7 @@ use skyla_vk::{Buffer, Context, Pipeline};
 pub const Q8_0_TACTIC: (u32, u32) = (4, 2);
 pub const KQUANT_TACTIC: (u32, u32) = (2, 4);
 pub const MATMUL_TILE_ROWS: u32 = 128;
+pub const MATMUL_TILE_COLS: u32 = 32;
 const EXPERT_LPR: [u32; 3] = [64, 32, 16];
 
 pub struct Matvec {
@@ -28,6 +29,7 @@ pub struct Kernels {
     pub logits: Pipeline,
     pub route: Pipeline,
     pub combine: Pipeline,
+    pub sort: Pipeline,
 }
 
 struct Kind<'a> {
@@ -43,7 +45,7 @@ fn matvec(ctx: &Context, kind: Kind, weights: &[Buffer], a: &Buffer) -> Result<M
     let (waves, rows) = kind.tactic;
     let build = |accum: u32, moe: u32, lpr: u32| -> Result<Pipeline> {
         let spec = match kind.matmul_type {
-            Some(ty) => vec![ty, accum],
+            Some(ty) => vec![ty, accum, moe],
             None => vec![waves, accum, rows, moe, lpr],
         };
         let n_buffers = 4 + kind.dual_view as u32;
@@ -60,9 +62,12 @@ fn matvec(ctx: &Context, kind: Kind, weights: &[Buffer], a: &Buffer) -> Result<M
     };
     let pipelines = vec![build(0, 0, kind.lanes)?, build(1, 0, kind.lanes)?];
     let mut experts = Vec::new();
-    if kind.matmul_type.is_none() {
-        for lpr in EXPERT_LPR.into_iter().filter(|&l| l <= kind.lanes) {
-            experts.push((lpr, build(0, 1, lpr)?));
+    match kind.matmul_type {
+        Some(_) => experts.push((0, build(0, 1, 0)?)),
+        None => {
+            for lpr in EXPERT_LPR.into_iter().filter(|&l| l <= kind.lanes) {
+                experts.push((lpr, build(0, 1, lpr)?));
+            }
         }
     }
     Ok(Matvec {
@@ -123,9 +128,9 @@ impl Kernels {
                 decode(s::MATVEC_Q6K, s::MATVEC_Q6K_W32, true, 44, KQUANT_TACTIC)?,
             ],
             batch: [
-                matvec(ctx, kind(s::MATMUL, true, 40, Some(0), mm), weights, a)?,
-                matvec(ctx, kind(s::MATMUL, true, 40, Some(1), mm), weights, a)?,
-                matvec(ctx, kind(s::MATMUL, true, 40, Some(2), mm), weights, a)?,
+                matvec(ctx, kind(s::MATMUL, true, 52, Some(0), mm), weights, a)?,
+                matvec(ctx, kind(s::MATMUL, true, 52, Some(1), mm), weights, a)?,
+                matvec(ctx, kind(s::MATMUL, true, 52, Some(2), mm), weights, a)?,
             ],
             rmsnorm: build(pick(s::RMSNORM, s::RMSNORM_W32), &[w0, a, a], 24, &[])?,
             qkv: build(pick(s::QKV_PREP, s::QKV_PREP_W32), &[w0, a, a, kv, kv], 64, &[k8, v8])?,
@@ -138,9 +143,10 @@ impl Kernels {
             merge: build(s::ATTENTION_MERGE, &[a, a], 24, &[])?,
             silu: build(s::SILU_MUL, &[a, a], 16, &[])?,
             take_last: build(s::TAKE_LAST, &[a, a], 16, &[])?,
-            logits: build(pick(s::MOE_LOGITS, s::MOE_LOGITS_W32), &[w0, a, a], 16, &[])?,
+            logits: build(pick(s::MOE_LOGITS, s::MOE_LOGITS_W32), &[w0, a, a], 20, &[])?,
             route: build(pick(s::MOE_ROUTE, s::MOE_ROUTE_W32), &[a, a], 20, &[])?,
             combine: build(s::MOE_COMBINE, &[a], 24, &[])?,
+            sort: build(s::MOE_SORT, &[a], 20, &[])?,
         })
     }
 
@@ -157,6 +163,10 @@ impl Kernels {
 impl Matvec {
     pub fn pipeline(&self, accum: bool) -> &Pipeline {
         &self.pipelines[accum as usize]
+    }
+
+    pub fn grouped(&self) -> &Pipeline {
+        &self.experts[0].1
     }
 
     pub fn experts(&self, units_per_row: u32) -> (&Pipeline, u32) {

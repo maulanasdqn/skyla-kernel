@@ -21,9 +21,16 @@ shared float chosen_value[16];
 shared uint chosen_index[16];
 
 void main() {
+    uint tok = gl_WorkGroupID.y;
+    if (tok >= floatBitsToUint(a[2])) {
+        return;
+    }
     uint t = gl_LocalInvocationID.x;
     uint waves = gl_NumSubgroups;
-    float v = t < p.n_expert ? a[p.logits_off + t] : -3e38;
+    uint logits_off = p.logits_off + tok * p.n_expert;
+    uint ids_off = p.ids_off + tok * p.n_used;
+    uint weights_off = p.weights_off + tok * p.n_used;
+    float v = t < p.n_expert ? a[logits_off + t] : -3e38;
 
     for (uint k = 0; k < p.n_used; k++) {
         float m = subgroupMax(v);
@@ -62,7 +69,7 @@ void main() {
         total += exp(chosen_value[k] - largest);
     }
     for (uint k = 0; k < p.n_used; k++) {
-        ids[p.ids_off + k] = chosen_index[k];
-        a[p.weights_off + k] = exp(chosen_value[k] - largest) / total;
+        ids[ids_off + k] = chosen_index[k];
+        a[weights_off + k] = exp(chosen_value[k] - largest) / total;
     }
 }

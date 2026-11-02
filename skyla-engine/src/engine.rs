@@ -10,7 +10,7 @@ use skyla_vk::{Context, Recording};
 
 pub struct Engine<'g> {
     decode: Recording,
-    prefill: Option<Recording>,
+    prefill: Recording,
     _kernels: Kernels,
     arena: Arena,
     weights: Weights,
@@ -41,10 +41,8 @@ impl<'g> Engine<'g> {
         let n_rep = (config.n_head / config.n_head_kv) as u32;
         let kernels = Kernels::new(&ctx, &weights.buffers, &arena.buffer, &arena.kv, n_rep, kv)?;
         let decode = graph::record(&ctx, &kernels, &weights, &arena, &config, false, profile)?;
-        let prefill = match config.n_expert {
-            0 => Some(graph::record(&ctx, &kernels, &weights, &arena, &config, true, profile)?),
-            _ => None,
-        };
+        let prefill = graph::record(&ctx, &kernels, &weights, &arena, &config, true, profile)?;
+
         Ok(Self {
             decode,
             prefill,
@@ -75,9 +73,9 @@ impl<'g> Engine<'g> {
     }
 
     pub fn last_step_profile(&self, prefill: bool) -> Result<Vec<(&'static str, f64)>> {
-        match (prefill, &self.prefill) {
-            (true, Some(recording)) => self.ctx.marks(recording),
-            _ => self.ctx.marks(&self.decode),
+        match prefill {
+            true => self.ctx.marks(&self.prefill),
+            false => self.ctx.marks(&self.decode),
         }
     }
 
@@ -129,17 +127,9 @@ impl<'g> Engine<'g> {
 
     pub fn prefill(&mut self, tokens: &[u32]) -> Result<&[f32]> {
         ensure!(!tokens.is_empty(), "prefill needs at least one token");
-        if self.prefill.is_none() {
-            for &token in tokens {
-                self.step(token)?;
-            }
-            return self.logits();
-        }
         for chunk in tokens.chunks(BATCH) {
             self.load(chunk)?;
-            if let Some(recording) = &self.prefill {
-                self.ctx.replay(recording)?;
-            }
+            self.ctx.replay(&self.prefill)?;
             self.pos += chunk.len() as u32;
         }
         self.logits()

@@ -12,18 +12,21 @@ layout(push_constant) uniform Push {
     uint router_off;
     uint logits_off;
     uint n_embd;
+    uint x_stride;
 } p;
 
 void main() {
     uint e = gl_WorkGroupID.x;
+    uint tok = gl_WorkGroupID.y;
     uint lane = gl_LocalInvocationID.x;
     uint row = (p.router_off + e * p.n_embd) / 4;
+    uint x = (p.x_off + tok * p.x_stride) / 4;
     float s = 0.0;
     for (uint i = lane; i < p.n_embd / 4; i += LANES) {
-        s += dot(w4[row + i], a4[p.x_off / 4 + i]);
+        s += dot(w4[row + i], a4[x + i]);
     }
     s = subgroupAdd(s);
     if (lane == 0) {
-        logits[p.logits_off + e] = s;
+        logits[p.logits_off + tok * gl_NumWorkGroups.x + e] = s;
     }
 }
