@@ -1,3 +1,4 @@
+mod direct;
 mod quant;
 mod reader;
 
@@ -6,6 +7,7 @@ pub use quant::dequantize;
 use anyhow::{anyhow, bail, ensure, Result};
 use memmap2::Mmap;
 use std::collections::BTreeMap;
+use std::fs::File;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DType {
@@ -110,6 +112,8 @@ impl TensorInfo {
 
 pub struct Gguf {
     mmap: Mmap,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    file: File,
     pub version: u32,
     pub metadata: BTreeMap<String, Value>,
     pub tensors: BTreeMap<String, TensorInfo>,

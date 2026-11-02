@@ -12,6 +12,7 @@ pub fn run(
     kv: (usize, skyla_engine::KvPrecision),
     check: bool,
     profile: bool,
+    warmup: bool,
 ) -> Result<()> {
     let g = Gguf::open(path)?;
     let t = Instant::now();
@@ -23,6 +24,10 @@ pub fn run(
         engine.weight_buffers(),
         t.elapsed()
     );
+    if warmup {
+        engine.prefill(prompt)?;
+        engine.reset();
+    }
     match check {
         true => compare(&g, &mut engine, prompt, n)?,
         false => generate(&mut engine, prompt, n)?,

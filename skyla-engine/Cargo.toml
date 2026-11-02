@@ -10,4 +10,13 @@ anyhow.workspace = true
 skyla-gguf.workspace = true
 skyla-ref.workspace = true
 skyla-shaders.workspace = true
+
+[features]
+vulkan = []
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+skyla-vk.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+skyla-metal.workspace = true
 skyla-vk.workspace = true

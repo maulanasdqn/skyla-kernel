@@ -1,10 +1,10 @@
 use crate::arena::{Arena, ATTENTION_CHUNK, BATCH};
+use crate::gpu::{Context, Recorder, Recording};
 use crate::kernels::{Kernels, MATMUL_TILE_COLS};
 use crate::weights::{LayerWeights, QMatrix, Weights};
 use anyhow::Result;
 use skyla_gguf::DType;
 use skyla_ref::Config;
-use skyla_vk::{Context, Recorder, Recording};
 
 mod moe;
 

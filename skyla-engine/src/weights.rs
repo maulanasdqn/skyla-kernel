@@ -1,9 +1,8 @@
-use crate::host_memory;
+use crate::gpu::{Buffer, Context};
 use crate::planner::Planner;
 use anyhow::{anyhow, Result};
 use skyla_gguf::{DType, Gguf};
 use skyla_ref::Config;
-use skyla_vk::{Buffer, BufferUsageFlags, Context};
 
 #[derive(Clone, Copy)]
 pub struct QMatrix {
@@ -39,9 +38,7 @@ pub struct Weights {
 
 impl Weights {
     pub fn load(ctx: &Context, g: &Gguf, c: &Config) -> Result<Self> {
-        let cap = ctx
-            .max_allocation_size
-            .min(ctx.props.limits.max_storage_buffer_range as u64);
+        let cap = ctx.max_buffer();
         let mut p = Planner::new(g, cap as usize);
         let rope = p.table(c.rope_freqs.clone());
         let out_norm = p.norm("output_norm.weight")?;
@@ -85,15 +82,14 @@ impl Weights {
             });
         }
 
-        let memory = host_memory(ctx)?;
         let mut buffers = Vec::with_capacity(p.sizes.len());
         for (i, &size) in p.sizes.iter().enumerate() {
             let size = size.next_multiple_of(16) as u64;
-            let mut b = ctx.alloc_buffer(size, BufferUsageFlags::STORAGE_BUFFER, memory)?;
+            let mut b = ctx.alloc_host(size)?;
             p.fill(
                 i,
                 b.as_mut_slice().ok_or_else(|| anyhow!("weight buffer is not mapped"))?,
-            );
+            )?;
             buffers.push(b);
         }
         Ok(Self {

@@ -1,6 +1,6 @@
 use crate::weights::QMatrix;
 use anyhow::{bail, ensure, Result};
-use skyla_gguf::{DType, Gguf};
+use skyla_gguf::{DType, Gguf, TensorInfo};
 use std::ops::Range;
 
 type Part = (Range<usize>, u32);
@@ -16,7 +16,7 @@ fn layout(dtype: DType) -> Result<(usize, Vec<Part>)> {
 
 struct Split<'a> {
     buf: usize,
-    src: &'a [u8],
+    src: &'a TensorInfo,
     block: usize,
     dst: Vec<(Range<usize>, usize)>,
 }
@@ -84,7 +84,7 @@ impl<'a> Planner<'a> {
         }
         self.splits.push(Split {
             buf,
-            src: self.g.data(t),
+            src: t,
             block,
             dst,
         });
@@ -97,19 +97,22 @@ impl<'a> Planner<'a> {
         })
     }
 
-    pub fn fill(&self, buf: usize, out: &mut [u8]) {
+    pub fn fill(&self, buf: usize, out: &mut [u8]) -> Result<()> {
         for (off, data) in self.tables.iter().filter(|_| buf == 0) {
             for (i, x) in data.iter().enumerate() {
                 out[off + i * 4..off + i * 4 + 4].copy_from_slice(&x.to_le_bytes());
             }
         }
+        let mut src = Vec::new();
         for s in self.splits.iter().filter(|s| s.buf == buf) {
-            for (i, b) in s.src.chunks_exact(s.block).enumerate() {
+            self.g.read_into(s.src, &mut src)?;
+            for (i, b) in src.chunks_exact(s.block).enumerate() {
                 for (range, start) in &s.dst {
                     let at = start + i * range.len();
                     out[at..at + range.len()].copy_from_slice(&b[range.clone()]);
                 }
             }
         }
+        Ok(())
     }
 }

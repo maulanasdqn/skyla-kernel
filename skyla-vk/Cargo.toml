@@ -8,3 +8,4 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 ash.workspace = true
+skyla-shaders.workspace = true

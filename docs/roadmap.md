@@ -398,6 +398,49 @@ the Q6_K output head at ~108 GB/s. A sweep of K-quant tactics (waves × rows) ga
 17–24 tok/s with run-to-run noise larger than the differences, so the Vega tactics stay
 until a controlled A/B says otherwise.
 
+## Native Metal backend (Apple M5)
+
+MoltenVK translates every Vulkan submit into Metal at run time and cannot reach the
+GPU's matrix units (no `VK_KHR_cooperative_matrix`). On macOS the engine now runs on
+`skyla-metal` instead; `--features vulkan` keeps the MoltenVK path for A/B runs and
+every other platform is unchanged.
+
+- `skyla-metal` mirrors the `skyla-vk` surface the engine uses (context, shared
+  buffers, pipelines with several binding sets, recorded and replayed command lists,
+  per-stage GPU times), so the engine only swaps an import.
+- Every GLSL kernel has an MSL twin in `skyla-metal/kernels`
+  ([conventions](../skyla-metal/kernels/CONVENTIONS.md)). Specialization constants
+  become `SPEC_n` macros and each (kernel, spec) pair is compiled from source once,
+  so arrays sized by a specialization stay compile-time.
+- A recording is replayed into one concurrent compute encoder with a buffer memory
+  barrier wherever the Vulkan graph has one; encoding 831 dispatches for an R1-8B
+  token takes ~0.15 ms.
+- The prefill GEMM keeps the K-quant dequantization into threadgroup memory but
+  multiplies with `simdgroup_matrix` (8 SIMD groups, 16 rows × 32 tokens each, f32
+  accumulators).
+- Weights are read with `F_NOCACHE` into the GPU buffers instead of being copied from
+  the memory map, so a model is not held twice (MoE REAP-15B load: 14 s → 4.2 s).
+- K-quant decode uses 8 SIMD groups × 1 row on 32-lane GPUs (GPU time per R1-8B token
+  −8% in ABBA runs); Vega keeps 2 × 4.
+
+All five test models match the CPU reference with 0 top-1 disagreements.
+
+| Apple M5, 512-token prompt + 128 tokens, warm | MoltenVK | Metal | MLX 0.32 |
+|---|---:|---:|---:|
+| Qwen3-0.6B Q8_0, decode / prefill (tok/s) | 104 / 1 780 | **155 / 2 280** | 164 / 7 517 |
+| Qwen3-4B Q4_K_M | 41.8 / 324 | **47.5 / 372** | 50.7 / 1 319 |
+| R1-8B Q4_K_M | 24.0 / 178 | **26.2 / 203** | 28.2 / 723 |
+
+Decode is within 6–7% of MLX, roughly the size difference between Q4_K_M (Q6_K output
+head and part of `down`) and MLX's uniform 4.5-bit weights; R1-8B decode reads at ~127
+GB/s against a measured 134 GB/s. Prefill is the open gap.
+
+Measurement notes: run-to-run results on this laptop drift by up to 30% once it is
+hot (and while it charges), so A/B results come from ABBA-ordered runs after a
+cool-down, and `skyla run --warmup` runs the prompt once first, as
+`mlx_lm.benchmark` does. On a 16 GB machine the first prompt after loading a 9 GB
+model can still take seconds while macOS decompresses swapped weight pages.
+
 ### Finding: memory placement decides bandwidth
 
 The laptop pairs an 8 GB and a 32 GB module: the first 16 GB run dual-channel and the
