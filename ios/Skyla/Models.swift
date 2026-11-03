@@ -20,6 +20,13 @@ enum Models {
 
     static let catalog: [ModelOption] = [
         ModelOption(
+            id: "sea-lion-v4-8b-decensored-q4_k_m.gguf",
+            name: "SEA-LION v4 8B Decensored",
+            short: "SEA-LION 8B",
+            detail: "Uncensored · most coherent Indonesian roleplay · needs about 6 GB of memory",
+            url: URL(string: "https://huggingface.co/mradermacher/Qwen-SEA-LION-v4-8B-VL-Magic_decensored-i1-GGUF/resolve/main/Qwen-SEA-LION-v4-8B-VL-Magic_decensored.i1-Q4_K_M.gguf"),
+            sizeGB: 5.0),
+        ModelOption(
             id: "sea-lion-v4-4b-decensored-q4_k_m.gguf",
             name: "SEA-LION v4 4B Decensored",
             short: "SEA-LION 4B",
