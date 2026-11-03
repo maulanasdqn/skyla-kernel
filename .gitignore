@@ -8,3 +8,5 @@
 /ios/build
 /ios/Skyla.xcodeproj
 /ios/Skyla/Info.plist
+/ios/Skyla/Skyla.entitlements
+/skyla-image/.build
