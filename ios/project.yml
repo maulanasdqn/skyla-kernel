@@ -3,6 +3,10 @@ options:
   bundleIdPrefix: com.maulanasdqn
   deploymentTarget:
     iOS: "26.0"
+packages:
+  StableDiffusion:
+    url: https://github.com/apple/ml-stable-diffusion
+    from: "1.1.0"
 settings:
   base:
     DEVELOPMENT_TEAM: PSF4PDL8N8
@@ -16,6 +20,10 @@ targets:
       - path: Skyla
         excludes:
           - "*.h"
+    entitlements:
+      path: Skyla/Skyla.entitlements
+      properties:
+        com.apple.developer.kernel.increased-memory-limit: true
     info:
       path: Skyla/Info.plist
       properties:
@@ -36,6 +44,7 @@ targets:
         ENABLE_USER_SCRIPT_SANDBOXING: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     dependencies:
+      - package: StableDiffusion
       - sdk: Metal.framework
       - sdk: Foundation.framework
     preBuildScripts:
