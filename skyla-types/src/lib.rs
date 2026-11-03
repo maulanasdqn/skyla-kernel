@@ -73,3 +73,55 @@ pub enum ServerMessage {
     Reset { position: usize },
     Error { message: String },
 }
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ImageModelEntry {
+    pub id: String,
+    pub name: String,
+    pub xl: bool,
+    #[serde(default)]
+    pub cloud: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ImageEntry {
+    pub url: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ImageRequest {
+    pub model: String,
+    pub prompt: String,
+    pub negative: String,
+    pub steps: u32,
+    pub guidance: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ImageStatus {
+    Idle,
+    Starting,
+    Loading,
+    Remote,
+    Step {
+        step: u32,
+        total: u32,
+    },
+    Done {
+        image: ImageEntry,
+        seconds: f64,
+        sampling_seconds: f64,
+    },
+    Cancelled,
+    Error {
+        message: String,
+    },
+}
+
+impl ImageStatus {
+    pub fn busy(&self) -> bool {
+        matches!(self, Self::Starting | Self::Loading | Self::Remote | Self::Step { .. })
+    }
+}
