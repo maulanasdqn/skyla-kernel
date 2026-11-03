@@ -4,20 +4,21 @@ mod inspect;
 mod probe;
 mod reference;
 mod run;
+mod serve;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum KvCache {
+pub(crate) enum KvCache {
     Q8,
     F16,
     V8,
 }
 
 impl KvCache {
-    fn precision(self) -> skyla_engine::KvPrecision {
+    pub(crate) fn precision(self) -> skyla_engine::KvPrecision {
         match self {
             Self::Q8 => skyla_engine::KvPrecision::Q8,
             Self::F16 => skyla_engine::KvPrecision::F16,
@@ -118,19 +119,7 @@ enum Command {
         system: Option<String>,
     },
     #[command(about = "Serve the browser chat UI and stream replies over WebSocket")]
-    Serve {
-        model: PathBuf,
-        #[arg(long, default_value_t = 16384, help = "Context length (KV cache size)")]
-        ctx: usize,
-        #[arg(long, value_enum, default_value_t = KvCache::V8, help = "KV cache precision")]
-        kv: KvCache,
-        #[arg(long, default_value = "127.0.0.1:8080", help = "Address to listen on")]
-        addr: std::net::SocketAddr,
-        #[arg(long, default_value = "skyla-web/dist", help = "Directory with the built web UI")]
-        web: PathBuf,
-        #[arg(long, help = "Directory scanned for GGUF models (default: two levels above MODEL)")]
-        models: Option<PathBuf>,
-    },
+    Serve(serve::ServeArgs),
 }
 
 fn main() -> Result<()> {
@@ -177,20 +166,6 @@ fn main() -> Result<()> {
             };
             chat::run(&model, opts)
         }
-        Command::Serve {
-            model,
-            ctx,
-            kv,
-            addr,
-            web,
-            models,
-        } => skyla_server::serve(skyla_server::Config {
-            model,
-            context: ctx,
-            kv: kv.precision(),
-            addr,
-            web,
-            models,
-        }),
+        Command::Serve(args) => serve::run(args),
     }
 }

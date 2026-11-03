@@ -4,7 +4,7 @@ mod error;
 mod infrastructure;
 
 use anyhow::Result;
-use application::EngineHandle;
+use application::{EngineHandle, ImageService};
 use skyla_engine::KvPrecision;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -17,6 +17,8 @@ pub struct Config {
     pub addr: SocketAddr,
     pub web: PathBuf,
     pub models: Option<PathBuf>,
+    pub image_models: PathBuf,
+    pub image_tool: PathBuf,
 }
 
 pub fn serve(config: Config) -> Result<()> {
@@ -27,9 +29,11 @@ pub fn serve(config: Config) -> Result<()> {
     println!("models under {}", root.display());
     println!("loading {} ...", config.model.display());
     let engine = EngineHandle::spawn(config.model.clone(), root, config.context, config.kv)?;
+    let images = ImageService::new(config.image_models.clone(), config.image_tool.clone());
+    println!("image models under {}", config.image_models.display());
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     runtime.block_on(async move {
-        let app = infrastructure::http::router(engine, &config.web);
+        let app = infrastructure::http::router(engine, images, &config.web);
         let listener = TcpListener::bind(config.addr).await?;
         println!("chat UI on http://{}", listener.local_addr()?);
         axum::serve(listener, app).await?;
