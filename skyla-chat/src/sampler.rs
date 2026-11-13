@@ -8,6 +8,7 @@ pub struct Sampler {
     temp: f32,
     top_k: usize,
     top_p: f32,
+    penalty: f32,
     state: u64,
     recent: VecDeque<u32>,
 }
@@ -18,9 +19,15 @@ impl Sampler {
             temp,
             top_k: top_k.max(1),
             top_p,
+            penalty: REPEAT_PENALTY,
             state: seed | 1,
             recent: VecDeque::with_capacity(REPEAT_WINDOW),
         }
+    }
+
+    pub fn without_penalty(mut self) -> Self {
+        self.penalty = 1.0;
+        self
     }
 
     pub fn from_settings(s: &Settings, seed: u64) -> Self {
@@ -54,11 +61,7 @@ impl Sampler {
         seen.dedup();
         for t in seen {
             let l = &mut cand[t as usize].1;
-            *l = if *l > 0.0 {
-                *l / REPEAT_PENALTY
-            } else {
-                *l * REPEAT_PENALTY
-            };
+            *l = if *l > 0.0 { *l / self.penalty } else { *l * self.penalty };
         }
         cand
     }

@@ -5,6 +5,7 @@ mod probe;
 mod reference;
 mod run;
 mod serve;
+mod wsp;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -120,6 +121,11 @@ enum Command {
     },
     #[command(about = "Serve the browser chat UI and stream replies over WebSocket")]
     Serve(serve::ServeArgs),
+    #[command(
+        subcommand,
+        about = "Weight-space programming: find a behavior in the weights and edit it out"
+    )]
+    Wsp(wsp::Cmd),
 }
 
 fn main() -> Result<()> {
@@ -167,5 +173,6 @@ fn main() -> Result<()> {
             chat::run(&model, opts)
         }
         Command::Serve(args) => serve::run(args),
+        Command::Wsp(cmd) => wsp::run(cmd),
     }
 }

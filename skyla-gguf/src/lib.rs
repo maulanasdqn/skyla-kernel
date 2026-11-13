@@ -2,7 +2,7 @@ mod direct;
 mod quant;
 mod reader;
 
-pub use quant::dequantize;
+pub use quant::{dequantize, quantize_q8_0};
 
 use anyhow::{anyhow, bail, ensure, Result};
 use memmap2::Mmap;

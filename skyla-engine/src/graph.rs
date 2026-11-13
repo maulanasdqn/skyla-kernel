@@ -130,20 +130,36 @@ impl Graph<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
+pub enum Mode {
+    Decode,
+    Prefill,
+    Prefix(usize),
+}
+
 pub fn record(
     ctx: &Context,
     k: &Kernels,
     w: &Weights,
     a: &Arena,
     c: &Config,
-    batched: bool,
+    mode: Mode,
     profile: bool,
 ) -> Result<Recording> {
+    let batched = !matches!(mode, Mode::Decode);
+    let upto = match mode {
+        Mode::Prefix(n) => Some(n),
+        _ => None,
+    };
     ctx.record(profile, |r| {
         let b = if batched { BATCH as u32 } else { 1 };
         let g = Graph { r, k, a, c, batched, b };
-        for (l, lw) in w.layers.iter().enumerate() {
+        for (l, lw) in w.layers.iter().enumerate().take(upto.unwrap_or(usize::MAX)) {
             g.layer(l, lw, w);
+        }
+        if upto.is_some() {
+            r.host_barrier();
+            return;
         }
         let src = match batched {
             true => {

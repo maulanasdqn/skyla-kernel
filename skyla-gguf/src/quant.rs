@@ -87,3 +87,15 @@ fn dequantize_q6k(b: &[u8; 210], out: &mut [f32]) {
         }
     }
 }
+
+pub fn quantize_q8_0(src: &[f32], out: &mut [u8]) {
+    for (x, b) in src.chunks(32).zip(out.chunks_mut(34)) {
+        let amax = x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        let d = amax / 127.0;
+        let inv = if d > 0.0 { 1.0 / d } else { 0.0 };
+        b[..2].copy_from_slice(&f16::from_f32(d).to_le_bytes());
+        for (q, v) in b[2..].iter_mut().zip(x) {
+            *q = (v * inv).round().clamp(-127.0, 127.0) as i8 as u8;
+        }
+    }
+}

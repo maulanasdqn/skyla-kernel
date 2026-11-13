@@ -2012,6 +2012,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "serde_json",
  "skyla-chat",
  "skyla-engine",
  "skyla-gguf",

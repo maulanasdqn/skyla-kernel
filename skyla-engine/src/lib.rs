@@ -5,6 +5,7 @@ mod graph;
 mod kernels;
 mod kv;
 mod planner;
+mod taps;
 mod weights;
 
 pub use engine::Engine;

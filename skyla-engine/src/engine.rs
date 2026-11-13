@@ -1,6 +1,6 @@
 use crate::arena::{Arena, BATCH};
 use crate::gpu::{Context, Recording};
-use crate::graph;
+use crate::graph::{self, Mode};
 use crate::kernels::Kernels;
 use crate::kv::KvPrecision;
 use crate::weights::Weights;
@@ -10,14 +10,14 @@ use skyla_ref::Config;
 
 pub struct Engine<'g> {
     decode: Recording,
-    prefill: Recording,
-    _kernels: Kernels,
-    arena: Arena,
-    weights: Weights,
+    pub(crate) prefill: Recording,
+    pub(crate) kernels: Kernels,
+    pub(crate) arena: Arena,
+    pub(crate) weights: Weights,
     embd: (DType, &'g [u8], usize),
     pub config: Config,
     pub pos: u32,
-    ctx: Context,
+    pub(crate) ctx: Context,
 }
 
 impl<'g> Engine<'g> {
@@ -40,13 +40,13 @@ impl<'g> Engine<'g> {
         let arena = Arena::new(&ctx, &config, max_ctx, kv)?;
         let n_rep = (config.n_head / config.n_head_kv) as u32;
         let kernels = Kernels::new(&ctx, &weights.buffers, &arena.buffer, &arena.kv, n_rep, kv)?;
-        let decode = graph::record(&ctx, &kernels, &weights, &arena, &config, false, profile)?;
-        let prefill = graph::record(&ctx, &kernels, &weights, &arena, &config, true, profile)?;
+        let decode = graph::record(&ctx, &kernels, &weights, &arena, &config, Mode::Decode, profile)?;
+        let prefill = graph::record(&ctx, &kernels, &weights, &arena, &config, Mode::Prefill, profile)?;
 
         Ok(Self {
             decode,
             prefill,
-            _kernels: kernels,
+            kernels,
             arena,
             weights,
             embd,
@@ -79,7 +79,7 @@ impl<'g> Engine<'g> {
         }
     }
 
-    fn load(&mut self, tokens: &[u32]) -> Result<()> {
+    pub(crate) fn load(&mut self, tokens: &[u32]) -> Result<()> {
         let max = self.arena.max_ctx;
         ensure!(self.pos + tokens.len() as u32 <= max, "context full ({max} tokens)");
         let (dtype, data, row) = self.embd;
