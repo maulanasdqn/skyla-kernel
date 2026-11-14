@@ -1,8 +1,9 @@
 use crate::arena::{Arena, ATTENTION_CHUNK, BATCH};
+use crate::backend::HYBRID;
 use crate::backend::MATMUL_TILE_COLS;
 use crate::gpu::{Context, Recorder, Recording};
 use crate::kernels::Kernels;
-use crate::weights::{LayerWeights, QMatrix, Weights};
+use crate::weights::{Attention, DeltaNet, LayerWeights, Mixer, QMatrix, Weights};
 use anyhow::Result;
 use skyla_gguf::DType;
 use skyla_ref::Config;
@@ -55,23 +56,20 @@ impl Graph<'_> {
         self.r.mark(label);
     }
 
-    fn layer(&self, l: usize, lw: &LayerWeights, w: &Weights) {
+    fn attention(&self, l: usize, at: &Attention, w: &Weights) {
         let (a, c, b, bt) = (self.a, self.c, self.b, self.batched);
-        let emb = |off| (off, a.s_embd);
-        self.rmsnorm(a.x, lw.attn_norm, a.n, b);
-        self.stage("rmsnorm");
-        let xn = self.input(emb(a.n), c.n_embd, 1);
-        self.matvec(lw.wq, xn, (a.q, a.s_q), false, bt);
-        self.matvec(lw.wk, xn, (a.k, a.s_kv), false, bt);
-        self.matvec(lw.wv, xn, (a.v, a.s_kv), false, bt);
+        let xn = self.input((a.n, a.s_embd), c.n_embd, 1);
+        self.matvec(at.wq, xn, (a.q, a.s_q), false, bt);
+        self.matvec(at.wk, xn, (a.k, a.s_kv), false, bt);
+        self.matvec(at.wv, xn, (a.v, a.s_kv), false, bt);
         self.stage("matvec qkv");
         let heads = (c.n_head + 2 * c.n_head_kv) as u32;
         let push = [
             a.q,
             a.k,
             a.v,
-            lw.q_norm,
-            lw.k_norm,
+            at.q_norm,
+            at.k_norm,
             a.k_cache(l),
             a.v_cache(l),
             c.n_head as u32,
@@ -103,12 +101,66 @@ impl Graph<'_> {
         self.r
             .dispatch(&self.k.attention, [c.n_head_kv as u32, a.n_split, b], &push);
         self.stage("attention");
-        let push = [a.part, a.attn, a.n_split, ATTENTION_CHUNK, a.s_part, a.s_q];
+        let mut push = vec![a.part, a.attn, a.n_split, ATTENTION_CHUNK, a.s_part, a.s_attn];
+        if HYBRID {
+            push.extend([a.q, a.s_q]);
+        }
         self.r.dispatch(&self.k.merge, [c.n_head as u32, b, 1], &push);
         self.stage("attention merge");
-        let xa = self.input((a.attn, a.s_q), c.n_head * c.head_dim, 1);
-        self.matvec(lw.wo, xa, emb(a.x), true, bt);
+        let xa = self.input((a.attn, a.s_attn), c.n_head * c.head_dim, 1);
+        self.matvec(at.wo, xa, (a.x, a.s_embd), true, bt);
         self.stage("matvec o");
+    }
+
+    fn deltanet(&self, l: usize, d: &DeltaNet) {
+        let (a, c, bt) = (self.a, self.c, self.batched);
+        let (Some(s), Some(m), Some(conv), Some(net)) = (&c.ssm, &a.ssm, &self.k.ssm_conv, &self.k.deltanet) else {
+            unreachable!("recurrent layer without linear attention kernels");
+        };
+        let xn = self.input((a.n, a.s_embd), c.n_embd, 1);
+        self.matvec(d.qkv, xn, (m.qkv, m.s_qkv), false, bt);
+        self.matvec(d.z, xn, (m.z, m.s_z), false, bt);
+        self.matvec(d.alpha, xn, (m.alpha, m.s_ab), false, bt);
+        self.matvec(d.beta, xn, (m.beta, m.s_ab), false, bt);
+        self.stage("matvec qkvz");
+        let (conv_state, state) = m.states[l];
+        let channels = s.channels() as u32;
+        let push = [m.qkv, m.s_qkv, d.conv, conv_state, channels];
+        self.r.dispatch(conv, [channels.div_ceil(256), 1, 1], &push);
+        self.stage("ssm conv");
+        let push = [
+            m.qkv,
+            m.s_qkv,
+            m.z,
+            m.s_z,
+            m.alpha,
+            m.beta,
+            m.s_ab,
+            m.o,
+            m.s_z,
+            state,
+            d.a,
+            d.dt,
+            d.norm,
+            s.n_k_head as u32,
+            c.eps.to_bits(),
+        ];
+        self.r.dispatch(net, [s.n_v_head as u32, 1, 1], &push);
+        self.stage("deltanet");
+        let xo = self.input((m.o, m.s_z), s.value_dim(), 1);
+        self.matvec(d.out, xo, (a.x, a.s_embd), true, bt);
+        self.stage("matvec ssm out");
+    }
+
+    fn layer(&self, l: usize, lw: &LayerWeights, w: &Weights) {
+        let (a, c, b, bt) = (self.a, self.c, self.b, self.batched);
+        let emb = |off| (off, a.s_embd);
+        self.rmsnorm(a.x, lw.attn_norm, a.n, b);
+        self.stage("rmsnorm");
+        match &lw.mixer {
+            Mixer::Attention(at) => self.attention(l, at, w),
+            Mixer::DeltaNet(d) => self.deltanet(l, d),
+        }
 
         self.rmsnorm(a.x, lw.ffn_norm, a.n, b);
         self.stage("rmsnorm");

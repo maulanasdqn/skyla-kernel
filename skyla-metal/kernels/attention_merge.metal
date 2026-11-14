@@ -1,6 +1,17 @@
 #include <metal_stdlib>
 using namespace metal;
 
+#ifndef SPEC_0
+#define SPEC_0 128
+#endif
+#ifndef SPEC_1
+#define SPEC_1 0
+#endif
+constant uint HEAD_DIM = SPEC_0;
+constant bool GATED = (SPEC_1) != 0;
+
+constant uint PART = HEAD_DIM + 2;
+
 struct Push {
     uint part_off;
     uint o_off;
@@ -8,6 +19,8 @@ struct Push {
     uint chunk;
     uint part_stride;
     uint o_stride;
+    uint g_off;
+    uint g_stride;
 };
 
 kernel void attention_merge(
@@ -22,22 +35,28 @@ kernel void attention_merge(
     if (tok >= ctl[2]) {
         return;
     }
-    uint t = lid.x;
     uint used = (ctl[1] + tok + p.chunk) / p.chunk;
-    uint first = p.part_off + tok * p.part_stride + h * p.n_split * 130;
+    uint first = p.part_off + tok * p.part_stride + h * p.n_split * PART;
 
     float big = -1e30f;
     for (uint s = 0; s < used; s++) {
-        big = max(big, a[first + s * 130]);
+        big = max(big, a[first + s * PART]);
     }
 
-    float total = 0.0f;
-    float o = 0.0f;
-    for (uint s = 0; s < used; s++) {
-        uint base = first + s * 130;
-        float w = exp(a[base] - big);
-        total += w * a[base + 1];
-        o += w * a[base + 2 + t];
+    for (uint t = lid.x; t < HEAD_DIM; t += 128) {
+        float total = 0.0f;
+        float o = 0.0f;
+        for (uint s = 0; s < used; s++) {
+            uint base = first + s * PART;
+            float w = exp(a[base] - big);
+            total += w * a[base + 1];
+            o += w * a[base + 2 + t];
+        }
+        o /= total;
+        if (GATED) {
+            float g = a[p.g_off + tok * p.g_stride + h * 2 * HEAD_DIM + HEAD_DIM + t];
+            o /= 1.0f + exp(-g);
+        }
+        a[p.o_off + tok * p.o_stride + h * HEAD_DIM + t] = o;
     }
-    a[p.o_off + tok * p.o_stride + h * 128 + t] = o / total;
 }

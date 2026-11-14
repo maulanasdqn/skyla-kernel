@@ -1,7 +1,7 @@
 use crate::arena::BATCH;
 use crate::graph::{self, Mode};
 use crate::Engine;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, ensure, Result};
 
 impl Engine<'_> {
     pub fn residuals(
@@ -10,6 +10,10 @@ impl Engine<'_> {
         layers: &[usize],
         mut f: impl FnMut(usize, usize, &[f32]),
     ) -> Result<()> {
+        ensure!(
+            self.config.ssm.is_none(),
+            "residual taps replay layers, which recurrent models cannot"
+        );
         let recordings = layers
             .iter()
             .map(|&l| {

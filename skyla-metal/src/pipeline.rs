@@ -16,7 +16,7 @@ fn threads(name: &str, spec: &[u32]) -> [u32; 3] {
     match name {
         "matvec_q4k" | "matvec_q6k" | "matvec_q8_0" => [32, first, 1],
         "attention" | "qkv_prep" | "moe_logits" => [32, 1, 1],
-        "attention_merge" => [128, 1, 1],
+        "attention_merge" | "deltanet" => [128, 1, 1],
         "rmsnorm" => [1024, 1, 1],
         "bandwidth" => [first, 1, 1],
         _ => [256, 1, 1],

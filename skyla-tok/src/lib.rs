@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 const QWEN2_PRE: &str =
     r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+const QWEN35_PRE: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 const CONTROL: u64 = 3;
 const USER_DEFINED: u64 = 4;
 
@@ -42,9 +43,11 @@ impl Tokenizer {
     pub fn from_gguf(g: &Gguf) -> Result<Self> {
         let model = g.meta_str("tokenizer.ggml.model")?;
         let pre = g.meta_str("tokenizer.ggml.pre")?;
-        if model != "gpt2" || pre != "qwen2" {
-            bail!("unsupported tokenizer {model}/{pre} (only gpt2/qwen2)");
-        }
+        let pre = match (model, pre) {
+            ("gpt2", "qwen2") => QWEN2_PRE,
+            ("gpt2", "qwen35") => QWEN35_PRE,
+            _ => bail!("unsupported tokenizer {model}/{pre} (only gpt2 with qwen2 or qwen35)"),
+        };
         let vocab = strings(g, "tokenizer.ggml.tokens")?;
         let types = g
             .meta("tokenizer.ggml.token_type")?
@@ -80,7 +83,7 @@ impl Tokenizer {
             specials,
             byte_enc,
             byte_dec,
-            pre: Regex::new(QWEN2_PRE)?,
+            pre: Regex::new(pre)?,
         })
     }
 

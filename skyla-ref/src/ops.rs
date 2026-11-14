@@ -39,3 +39,20 @@ pub fn argmax(x: &[f32]) -> u32 {
         .max_by(|a, b| a.1.total_cmp(b.1))
         .map_or(0, |(i, _)| i as u32)
 }
+
+pub(crate) fn sigmoid(x: f32) -> f32 {
+    1.0 / (1.0 + (-x).exp())
+}
+
+pub(crate) fn softplus(x: f32) -> f32 {
+    if x > 20.0 {
+        x
+    } else {
+        x.exp().ln_1p()
+    }
+}
+
+pub(crate) fn l2norm_inplace(x: &mut [f32], eps: f32) {
+    let r = 1.0 / dot(x, x).sqrt().max(eps);
+    x.iter_mut().for_each(|v| *v *= r);
+}

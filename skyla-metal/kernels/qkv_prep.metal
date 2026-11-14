@@ -11,10 +11,24 @@ using namespace metal;
 #ifndef SPEC_1
 #define SPEC_1 0
 #endif
+#ifndef SPEC_2
+#define SPEC_2 128
+#endif
+#ifndef SPEC_3
+#define SPEC_3 128
+#endif
+#ifndef SPEC_4
+#define SPEC_4 0
+#endif
 constant bool K_Q8 = (SPEC_0) != 0;
 constant bool V_Q8 = (SPEC_1) != 0;
+constant uint HEAD_DIM = SPEC_2;
+constant uint N_ROT = SPEC_3;
+constant bool GATED = (SPEC_4) != 0;
 
-constant uint PAIRS = 64 / LANES;
+constant uint E = HEAD_DIM / LANES;
+constant uint ROT_K = N_ROT / 2 / LANES;
+constant uint Q_HEAD = GATED ? 2 * HEAD_DIM : HEAD_DIM;
 
 struct Push {
     uint q_off;
@@ -47,23 +61,18 @@ static inline void store(
     device half *kv,
     device char *kv8,
     constant Push &p,
-    bool q8, uint cache, uint scales, uint pos, uint head, uint t, float y0, float y1)
+    bool q8, uint cache, uint scales, uint pos, uint head, uint i, float y)
 {
-    uint kv_dim = p.n_kv * 128;
-    uint dst = cache + pos * kv_dim + head * 128;
+    uint kv_dim = p.n_kv * HEAD_DIM;
+    uint dst = cache + pos * kv_dim + head * HEAD_DIM + i;
     if (!q8) {
-        kv[dst + t] = half(y0);
-        kv[dst + t + 64] = half(y1);
+        kv[dst] = half(y);
         return;
     }
-    float s0 = block_max(y0) / 127.0f;
-    float s1 = block_max(y1) / 127.0f;
-    kv8[dst + t] = char(s0 > 0.0f ? round(y0 / s0) : 0.0f);
-    kv8[dst + t + 64] = char(s1 > 0.0f ? round(y1 / s1) : 0.0f);
-    if (t % 32 == 0) {
-        uint sdst = scales + pos * (kv_dim / 32) + head * 4 + t / 32;
-        kv[sdst] = half(s0);
-        kv[sdst + 2] = half(s1);
+    float s = block_max(y) / 127.0f;
+    kv8[dst] = char(s > 0.0f ? round(y / s) : 0.0f);
+    if (i % 32 == 0) {
+        kv[scales + pos * (kv_dim / 32) + head * (HEAD_DIM / 32) + i / 32] = half(s);
     }
 }
 
@@ -90,46 +99,46 @@ kernel void qkv_prep(
 
     if (h >= p.n_head + p.n_kv) {
         uint vh = h - p.n_head - p.n_kv;
-        for (uint k = 0; k < PAIRS; k++) {
+        for (uint k = 0; k < E; k++) {
             uint i = k * LANES + t;
-            float v0 = a[v_base + vh * 128 + i];
-            float v1 = a[v_base + vh * 128 + i + 64];
-            store(kv, kv8, p, V_Q8, p.vc_off, p.vs_off, pos, vh, i, v0, v1);
+            store(kv, kv8, p, V_Q8, p.vc_off, p.vs_off, pos, vh, i, a[v_base + vh * HEAD_DIM + i]);
         }
         return;
     }
 
     bool is_q = h < p.n_head;
     uint head = is_q ? h : h - p.n_head;
-    uint src = (is_q ? q_base : k_base) + head * 128;
+    uint src = is_q ? q_base + head * Q_HEAD : k_base + head * HEAD_DIM;
     uint nw = is_q ? p.qn_off : p.kn_off;
 
-    float x0[PAIRS];
-    float x1[PAIRS];
+    float x[E];
     float ss = 0.0f;
-    for (uint k = 0; k < PAIRS; k++) {
-        x0[k] = a[src + k * LANES + t];
-        x1[k] = a[src + k * LANES + t + 64];
-        ss += x0[k] * x0[k] + x1[k] * x1[k];
+    for (uint k = 0; k < E; k++) {
+        x[k] = a[src + k * LANES + t];
+        ss += x[k] * x[k];
     }
-    float r = rsqrt(simd_sum(ss) / 128.0f + p.eps);
+    float r = rsqrt(simd_sum(ss) / float(HEAD_DIM) + p.eps);
+    for (uint k = 0; k < E; k++) {
+        x[k] *= r * w[nw + k * LANES + t];
+    }
 
-    for (uint k = 0; k < PAIRS; k++) {
+    for (uint k = 0; k < ROT_K; k++) {
         uint i = k * LANES + t;
-        float n0 = x0[k] * r * w[nw + i];
-        float n1 = x1[k] * r * w[nw + i + 64];
-
         float angle = float(pos) * w[p.rope_off + i];
         float c = cos(angle) * p.mscale;
         float s = sin(angle) * p.mscale;
-        float y0 = n0 * c - n1 * s;
-        float y1 = n0 * s + n1 * c;
+        float x0 = x[k];
+        float x1 = x[k + ROT_K];
+        x[k] = x0 * c - x1 * s;
+        x[k + ROT_K] = x0 * s + x1 * c;
+    }
 
+    for (uint k = 0; k < E; k++) {
+        uint i = k * LANES + t;
         if (is_q) {
-            a[src + i] = y0;
-            a[src + i + 64] = y1;
+            a[src + i] = x[k];
         } else {
-            store(kv, kv8, p, K_Q8, p.kc_off, p.ks_off, pos, head, i, y0, y1);
+            store(kv, kv8, p, K_Q8, p.kc_off, p.ks_off, pos, head, i, x[k]);
         }
     }
 }

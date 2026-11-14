@@ -20,6 +20,13 @@ enum Models {
 
     static let catalog: [ModelOption] = [
         ModelOption(
+            id: "deepseek-v4-pro-qwen3.5-9b-heretic-q4_k_m.gguf",
+            name: "DeepSeek V4 Pro Qwen3.5 9B Uncensored",
+            short: "Qwen3.5 9B",
+            detail: "Uncensored · DeepSeek V4 reasoning distilled into Qwen3.5 · thinks before answering · needs about 6 GB of memory",
+            url: URL(string: "https://huggingface.co/mradermacher/DeepSeek-V4-Pro-Qwen3.5-9B-UNCENSORED-heretic-GGUF/resolve/main/DeepSeek-V4-Pro-Qwen3.5-9B-UNCENSORED-heretic.Q4_K_M.gguf"),
+            sizeGB: 5.8),
+        ModelOption(
             id: "sea-lion-v4-8b-decensored-q4_k_m.gguf",
             name: "SEA-LION v4 8B Decensored",
             short: "SEA-LION 8B",

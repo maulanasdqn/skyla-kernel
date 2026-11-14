@@ -1,4 +1,5 @@
 use crate::arena::{Arena, BATCH};
+use crate::backend::HYBRID;
 use crate::gpu::{Context, Recording};
 use crate::graph::{self, Mode};
 use crate::kernels::Kernels;
@@ -23,11 +24,20 @@ pub struct Engine<'g> {
 impl<'g> Engine<'g> {
     pub fn new(g: &'g Gguf, max_ctx: usize, kv: KvPrecision, profile: bool) -> Result<Self> {
         let config = Config::from_gguf(g)?;
+        let plain = config.head_dim == 128 && !config.attn_gate && config.ssm.is_none();
+        ensure!(plain || HYBRID, "this model needs the Metal backend");
         ensure!(
-            config.head_dim == 128,
-            "kernels assume head_dim 128, got {}",
-            config.head_dim
+            matches!(config.head_dim, 128 | 256) && config.n_rot % 64 == 0 && config.n_rot <= config.head_dim,
+            "no attention kernels for head_dim {} with {} rotary dims",
+            config.head_dim,
+            config.n_rot
         );
+        if let Some(s) = &config.ssm {
+            ensure!(
+                s.head_dim == 128 && s.conv >= 2 && s.n_v_head % s.n_k_head == 0,
+                "no linear attention kernels for this layout"
+            );
+        }
         ensure!(
             matches!(config.n_head / config.n_head_kv, 1..=8),
             "unsupported GQA ratio"
@@ -38,12 +48,11 @@ impl<'g> Engine<'g> {
         let ctx = Context::new()?;
         let weights = Weights::load(&ctx, g, &config)?;
         let arena = Arena::new(&ctx, &config, max_ctx, kv)?;
-        let n_rep = (config.n_head / config.n_head_kv) as u32;
-        let kernels = Kernels::new(&ctx, &weights.buffers, &arena.buffer, &arena.kv, n_rep, kv)?;
+        let kernels = Kernels::new(&ctx, &weights.buffers, &arena.buffer, &arena.kv, &config, kv)?;
         let decode = graph::record(&ctx, &kernels, &weights, &arena, &config, Mode::Decode, profile)?;
         let prefill = graph::record(&ctx, &kernels, &weights, &arena, &config, Mode::Prefill, profile)?;
 
-        Ok(Self {
+        let mut engine = Self {
             decode,
             prefill,
             kernels,
@@ -53,7 +62,9 @@ impl<'g> Engine<'g> {
             config,
             pos: 0,
             ctx,
-        })
+        };
+        engine.reset();
+        Ok(engine)
     }
 
     pub fn device_name(&self) -> String {
@@ -70,6 +81,11 @@ impl<'g> Engine<'g> {
 
     pub fn reset(&mut self) {
         self.pos = 0;
+        if let Some((start, end)) = self.arena.ssm.as_ref().map(|s| s.state_range) {
+            if let Some(a) = self.arena.buffer.as_f32_mut() {
+                a[start as usize..end as usize].fill(0.0);
+            }
+        }
     }
 
     pub fn last_step_profile(&self, prefill: bool) -> Result<Vec<(&'static str, f64)>> {

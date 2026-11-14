@@ -1,9 +1,10 @@
 use crate::arena::ATTENTION_CHUNK;
-use crate::backend::{HALF_INPUTS, TO_HALF};
+use crate::backend::{DELTANET, HALF_INPUTS, SSM_CONV, TO_HALF};
 use crate::gpu::{Buffer, Context, Pipeline};
 use crate::kv::KvPrecision;
 use anyhow::{bail, Result};
 use skyla_gguf::DType;
+use skyla_ref::Config;
 use skyla_shaders::Shader;
 
 pub const Q8_0_TACTIC: (u32, u32) = (4, 2);
@@ -33,6 +34,8 @@ pub struct Kernels {
     pub combine: Pipeline,
     pub sort: Pipeline,
     pub to_half: Option<Pipeline>,
+    pub ssm_conv: Option<Pipeline>,
+    pub deltanet: Option<Pipeline>,
 }
 
 struct Kind<'a> {
@@ -99,9 +102,12 @@ impl Kernels {
         weights: &[Buffer],
         a: &Buffer,
         kv: &Buffer,
-        n_rep: u32,
+        c: &Config,
         precision: KvPrecision,
     ) -> Result<Self> {
+        let n_rep = (c.n_head / c.n_head_kv) as u32;
+        let (head_dim, gated) = (c.head_dim as u32, c.attn_gate as u32);
+        let q_head = head_dim * (1 + gated);
         let (k8, v8) = (precision.keys_q8() as u32, precision.values_q8() as u32);
         let w32 = wave32(ctx)?;
         let kquant = if w32 { KQUANT_TACTIC_W32 } else { KQUANT_TACTIC };
@@ -138,14 +144,19 @@ impl Kernels {
                 matvec(ctx, kind(&s::MATMUL, true, 52, Some(2), mm), weights, a)?,
             ],
             rmsnorm: build(pick(&s::RMSNORM, &s::RMSNORM_W32), &[w0, a, a], 24, &[])?,
-            qkv: build(pick(&s::QKV_PREP, &s::QKV_PREP_W32), &[w0, a, a, kv, kv], 64, &[k8, v8])?,
+            qkv: build(
+                pick(&s::QKV_PREP, &s::QKV_PREP_W32),
+                &[w0, a, a, kv, kv],
+                64,
+                &[k8, v8, head_dim, c.n_rot as u32, gated],
+            )?,
             attention: build(
                 pick(&s::ATTENTION, &s::ATTENTION_W32),
                 &[a, a, kv, kv, kv],
                 44,
-                &[n_rep, ATTENTION_CHUNK, k8, v8],
+                &[n_rep, ATTENTION_CHUNK, k8, v8, head_dim, q_head],
             )?,
-            merge: build(&s::ATTENTION_MERGE, &[a, a], 24, &[])?,
+            merge: build(&s::ATTENTION_MERGE, &[a, a], 24, &[head_dim, gated])?,
             silu: build(&s::SILU_MUL, &[a, a], 16, &[])?,
             take_last: build(&s::TAKE_LAST, &[a, a], 16, &[])?,
             logits: build(pick(&s::MOE_LOGITS, &s::MOE_LOGITS_W32), &[w0, a, a], 20, &[])?,
@@ -153,6 +164,16 @@ impl Kernels {
             combine: build(&s::MOE_COMBINE, &[a], 24, &[])?,
             sort: build(&s::MOE_SORT, &[a], 20, &[])?,
             to_half: HALF_INPUTS.then(|| build(&TO_HALF, &[a, a, a], 24, &[])).transpose()?,
+            ssm_conv: c
+                .ssm
+                .as_ref()
+                .map(|s| build(&SSM_CONV, &[w0, a, a], 20, &[s.conv as u32]))
+                .transpose()?,
+            deltanet: c
+                .ssm
+                .as_ref()
+                .map(|_| build(&DELTANET, &[w0, a, a], 60, &[]))
+                .transpose()?,
         })
     }
 

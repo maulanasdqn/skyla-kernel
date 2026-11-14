@@ -23,6 +23,7 @@ pub struct Arena {
     pub logits: u32,
     pub s_embd: u32,
     pub s_q: u32,
+    pub s_attn: u32,
     pub s_kv: u32,
     pub s_ff: u32,
     pub s_part: u32,
@@ -30,6 +31,20 @@ pub struct Arena {
     pub max_ctx: u32,
     pub kv_layout: KvLayout,
     pub moe: MoeRegions,
+    pub ssm: Option<SsmRegions>,
+}
+
+pub struct SsmRegions {
+    pub qkv: u32,
+    pub z: u32,
+    pub alpha: u32,
+    pub beta: u32,
+    pub o: u32,
+    pub s_qkv: u32,
+    pub s_z: u32,
+    pub s_ab: u32,
+    pub states: Vec<(u32, u32)>,
+    pub state_range: (u32, u32),
 }
 
 #[derive(Clone, Copy)]
@@ -70,13 +85,14 @@ impl Arena {
         let mut l = Layout { size: 64 };
         let (x, s_embd) = l.batched(c.n_embd);
         let (n, _) = l.batched(c.n_embd);
-        let (q, s_q) = l.batched(c.n_head * c.head_dim);
+        let q_width = c.n_head * c.head_dim * if c.attn_gate { 2 } else { 1 };
+        let (q, s_q) = l.batched(q_width);
         let (k, s_kv) = l.batched(c.n_head_kv * c.head_dim);
         let (v, _) = l.batched(c.n_head_kv * c.head_dim);
-        let (attn, _) = l.batched(c.n_head * c.head_dim);
+        let (attn, s_attn) = l.batched(c.n_head * c.head_dim);
         let (gate, s_ff) = l.batched(c.n_ff);
         let (up, _) = l.batched(c.n_ff);
-        let (part, s_part) = l.batched(c.n_head * n_split as usize * 130);
+        let (part, s_part) = l.batched(c.n_head * n_split as usize * (c.head_dim + 2));
         let last = l.single(c.n_embd);
         let logits = l.single(c.n_vocab);
         let stride = c.n_ff_expert.next_multiple_of(64);
@@ -92,11 +108,42 @@ impl Arena {
             list: l.single(slots),
             stride: stride as u32,
         };
-        let widest = [c.n_embd, c.n_head * c.head_dim, c.n_ff].map(|w| w.next_multiple_of(64) * BATCH);
+        let value_dim = c.ssm.as_ref().map_or(0, |s| s.value_dim());
+        let widest = [c.n_embd, c.n_head * c.head_dim, c.n_ff, value_dim].map(|w| w.next_multiple_of(64) * BATCH);
         let half = l.single(widest.into_iter().chain([stride * slots]).max().unwrap_or(0) / 2 + 64);
+        let ssm = c.ssm.as_ref().map(|s| {
+            let (qkv, s_qkv) = l.batched(s.channels());
+            let (z, s_z) = l.batched(s.value_dim());
+            let (alpha, s_ab) = l.batched(s.n_v_head);
+            let (beta, _) = l.batched(s.n_v_head);
+            let (o, _) = l.batched(s.value_dim());
+            let start = l.size as u32;
+            let states = (0..c.n_layer)
+                .map(|i| match c.recurrent(i) {
+                    true => {
+                        let conv = l.single(s.channels() * (s.conv - 1));
+                        (conv, l.single(s.n_v_head * s.head_dim * s.head_dim))
+                    }
+                    false => (0, 0),
+                })
+                .collect();
+            SsmRegions {
+                qkv,
+                z,
+                alpha,
+                beta,
+                o,
+                s_qkv,
+                s_z,
+                s_ab,
+                states,
+                state_range: (start, l.size as u32),
+            }
+        });
 
         let buffer = ctx.alloc_host(l.size as u64 * 4)?;
-        let kv_layout = KvLayout::new(precision, c.n_layer, max_ctx, c.n_head_kv * c.head_dim);
+        let attention: Vec<bool> = (0..c.n_layer).map(|i| !c.recurrent(i)).collect();
+        let kv_layout = KvLayout::new(precision, &attention, max_ctx, c.n_head_kv * c.head_dim);
         let kv_bytes = kv_layout.bytes();
         ensure!(
             kv_bytes <= ctx.max_buffer(),
@@ -121,6 +168,7 @@ impl Arena {
             logits,
             s_embd,
             s_q,
+            s_attn,
             s_kv,
             s_ff,
             s_part,
@@ -128,6 +176,7 @@ impl Arena {
             max_ctx: max_ctx as u32,
             kv_layout,
             moe,
+            ssm,
         })
     }
 

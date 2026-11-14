@@ -13,15 +13,36 @@ pub struct QMatrix {
     pub n_out: u32,
 }
 
-pub struct LayerWeights {
-    pub attn_norm: u32,
+pub struct Attention {
     pub q_norm: u32,
     pub k_norm: u32,
-    pub ffn_norm: u32,
     pub wq: QMatrix,
     pub wk: QMatrix,
     pub wv: QMatrix,
     pub wo: QMatrix,
+}
+
+pub struct DeltaNet {
+    pub conv: u32,
+    pub a: u32,
+    pub dt: u32,
+    pub norm: u32,
+    pub qkv: QMatrix,
+    pub z: QMatrix,
+    pub alpha: QMatrix,
+    pub beta: QMatrix,
+    pub out: QMatrix,
+}
+
+pub enum Mixer {
+    Attention(Attention),
+    DeltaNet(DeltaNet),
+}
+
+pub struct LayerWeights {
+    pub attn_norm: u32,
+    pub ffn_norm: u32,
+    pub mixer: Mixer,
     pub gate: QMatrix,
     pub up: QMatrix,
     pub down: QMatrix,
@@ -43,16 +64,21 @@ impl Weights {
         let rope = p.table(c.rope_freqs.clone());
         let out_norm = p.norm("output_norm.weight")?;
         let moe = c.n_expert > 0;
-        let mut norms = Vec::with_capacity(c.n_layer);
+        let mut tables = Vec::with_capacity(c.n_layer);
         let mut routers = Vec::with_capacity(c.n_layer);
         for i in 0..c.n_layer {
             let n = |s: &str| format!("blk.{i}.{s}.weight");
-            norms.push([
-                p.norm(&n("attn_norm"))?,
-                p.norm(&n("attn_q_norm"))?,
-                p.norm(&n("attn_k_norm"))?,
-                p.norm(&n("ffn_norm"))?,
-            ]);
+            let norms = [p.norm(&n("attn_norm"))?, p.norm(&n(c.ffn_norm()))?];
+            let mixer = match c.recurrent(i) {
+                true => [
+                    p.norm(&n("ssm_conv1d"))?,
+                    p.norm(&format!("blk.{i}.ssm_a"))?,
+                    p.norm(&format!("blk.{i}.ssm_dt.bias"))?,
+                    p.norm(&n("ssm_norm"))?,
+                ],
+                false => [p.norm(&n("attn_q_norm"))?, p.norm(&n("attn_k_norm"))?, 0, 0],
+            };
+            tables.push((norms, mixer));
             routers.push(match moe {
                 true => Some(p.norm(&n("ffn_gate_inp"))?),
                 false => None,
@@ -64,17 +90,33 @@ impl Weights {
             false => p.matrix("token_embd.weight")?,
         };
         let mut layers = Vec::with_capacity(c.n_layer);
-        for (i, [attn_norm, q_norm, k_norm, ffn_norm]) in norms.into_iter().enumerate() {
+        for (i, ([attn_norm, ffn_norm], [t0, t1, t2, t3])) in tables.into_iter().enumerate() {
             let n = |s: &str| format!("blk.{i}.{s}.weight");
+            let mixer = match c.recurrent(i) {
+                true => Mixer::DeltaNet(DeltaNet {
+                    conv: t0,
+                    a: t1,
+                    dt: t2,
+                    norm: t3,
+                    qkv: p.matrix(&n("attn_qkv"))?,
+                    z: p.matrix(&n("attn_gate"))?,
+                    alpha: p.matrix(&n("ssm_alpha"))?,
+                    beta: p.matrix(&n("ssm_beta"))?,
+                    out: p.matrix(&n("ssm_out"))?,
+                }),
+                false => Mixer::Attention(Attention {
+                    q_norm: t0,
+                    k_norm: t1,
+                    wq: p.matrix(&n("attn_q"))?,
+                    wk: p.matrix(&n("attn_k"))?,
+                    wv: p.matrix(&n("attn_v"))?,
+                    wo: p.matrix(&n("attn_output"))?,
+                }),
+            };
             layers.push(LayerWeights {
                 attn_norm,
-                q_norm,
-                k_norm,
                 ffn_norm,
-                wq: p.matrix(&n("attn_q"))?,
-                wk: p.matrix(&n("attn_k"))?,
-                wv: p.matrix(&n("attn_v"))?,
-                wo: p.matrix(&n("attn_output"))?,
+                mixer,
                 gate: p.matrix(&n(&ffn("ffn_gate")))?,
                 up: p.matrix(&n(&ffn("ffn_up")))?,
                 down: p.matrix(&n(&ffn("ffn_down")))?,
