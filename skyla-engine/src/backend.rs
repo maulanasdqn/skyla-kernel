@@ -32,3 +32,8 @@ pub const DELTANET: skyla_shaders::Shader = skyla_shaders::Shader {
     name: "deltanet",
     spirv: &[],
 };
+
+pub const SSM_NORM: skyla_shaders::Shader = skyla_shaders::Shader {
+    name: "ssm_norm",
+    spirv: &[],
+};

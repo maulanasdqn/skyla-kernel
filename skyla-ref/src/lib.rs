@@ -118,7 +118,9 @@ impl Config {
     }
 
     pub fn recurrent(&self, layer: usize) -> bool {
-        self.ssm.as_ref().is_some_and(|s| !(layer + 1).is_multiple_of(s.interval))
+        self.ssm
+            .as_ref()
+            .is_some_and(|s| !(layer + 1).is_multiple_of(s.interval))
     }
 
     pub fn ffn_norm(&self) -> &'static str {

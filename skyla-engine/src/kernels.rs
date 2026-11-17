@@ -1,5 +1,5 @@
 use crate::arena::ATTENTION_CHUNK;
-use crate::backend::{DELTANET, HALF_INPUTS, SSM_CONV, TO_HALF};
+use crate::backend::{DELTANET, HALF_INPUTS, SSM_CONV, SSM_NORM, TO_HALF};
 use crate::gpu::{Buffer, Context, Pipeline};
 use crate::kv::KvPrecision;
 use anyhow::{bail, Result};
@@ -36,6 +36,7 @@ pub struct Kernels {
     pub to_half: Option<Pipeline>,
     pub ssm_conv: Option<Pipeline>,
     pub deltanet: Option<Pipeline>,
+    pub ssm_norm: Option<Pipeline>,
 }
 
 struct Kind<'a> {
@@ -172,7 +173,12 @@ impl Kernels {
             deltanet: c
                 .ssm
                 .as_ref()
-                .map(|_| build(&DELTANET, &[w0, a, a], 60, &[]))
+                .map(|_| build(&DELTANET, &[w0, a, a], 48, &[]))
+                .transpose()?,
+            ssm_norm: c
+                .ssm
+                .as_ref()
+                .map(|_| build(&SSM_NORM, &[w0, a, a], 24, &[]))
                 .transpose()?,
         })
     }

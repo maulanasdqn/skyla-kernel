@@ -114,7 +114,9 @@ impl Graph<'_> {
 
     fn deltanet(&self, l: usize, d: &DeltaNet) {
         let (a, c, bt) = (self.a, self.c, self.batched);
-        let (Some(s), Some(m), Some(conv), Some(net)) = (&c.ssm, &a.ssm, &self.k.ssm_conv, &self.k.deltanet) else {
+        let (Some(s), Some(m), Some(conv), Some(net), Some(norm)) =
+            (&c.ssm, &a.ssm, &self.k.ssm_conv, &self.k.deltanet, &self.k.ssm_norm)
+        else {
             unreachable!("recurrent layer without linear attention kernels");
         };
         let xn = self.input((a.n, a.s_embd), c.n_embd, 1);
@@ -131,8 +133,6 @@ impl Graph<'_> {
         let push = [
             m.qkv,
             m.s_qkv,
-            m.z,
-            m.s_z,
             m.alpha,
             m.beta,
             m.s_ab,
@@ -141,12 +141,15 @@ impl Graph<'_> {
             state,
             d.a,
             d.dt,
-            d.norm,
             s.n_k_head as u32,
             c.eps.to_bits(),
         ];
-        self.r.dispatch(net, [s.n_v_head as u32, 1, 1], &push);
+        self.r
+            .dispatch(net, [s.n_v_head as u32, s.head_dim as u32 / 16, 1], &push);
         self.stage("deltanet");
+        let push = [m.o, m.s_z, m.z, m.s_z, d.norm, c.eps.to_bits()];
+        self.r.dispatch(norm, [s.n_v_head as u32, self.b, 1], &push);
+        self.stage("ssm norm");
         let xo = self.input((m.o, m.s_z), s.value_dim(), 1);
         self.matvec(d.out, xo, (a.x, a.s_embd), true, bt);
         self.stage("matvec ssm out");

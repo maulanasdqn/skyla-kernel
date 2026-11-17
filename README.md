@@ -72,6 +72,12 @@ The same build through MoltenVK reached 24.0 / 178 tok/s on R1-8B, so the Metal 
 These four models and Qwen3-0.6B Q4_K_M match the CPU reference with no top-1
 disagreements (worst logit error 0.08–0.50 with the default `--kv v8`).
 
+Qwen3.5 (`qwen35`, Metal only) mixes Gated DeltaNet linear attention with gated full
+attention on every fourth layer. DeepSeek-V4-Pro-Qwen3.5-9B (Q4_K_M, 5.8 GB) runs at about
+21 tok/s generation and 443 tok/s prompt processing on a warmed 420-token prompt, and
+matches llama.cpp token for token on a 185-token prompt; Qwen3.5-0.8B matches the CPU
+reference with no top-1 disagreements.
+
 ## Target machines
 
 | | ASUS Vivobook M1405YA (primary) | MacBook with Apple M5 |
@@ -136,7 +142,7 @@ instead, for A/B runs.
 
 ### Get models
 
-Any GGUF of the `qwen3` or `qwen3moe` architecture with Q8_0, Q4_K or Q6_K weights works
+Any GGUF of the `qwen3`, `qwen3moe` or `qwen35` architecture with Q8_0, Q4_K or Q6_K weights works
 (abliterated variants included, e.g. Huihui-Qwen3-30B-A3B-Instruct-2507-abliterated). Keep one
 folder per model under a common directory so the browser UI can list them:
 
@@ -174,7 +180,8 @@ character's persona). Every reply shows its token count, speed and context use.
 `ios/` holds **Skyla Runtime**, a SwiftUI chat app that runs the same engine on the
 iPhone's GPU through `skyla-ffi`, a static library with a small C interface. It downloads
 models inside the app, or loads any `.gguf` put in its folder in the Files app, with a 4K
-context. Qwen3 4B generates at about 17.6 tok/s on an iPhone 17 Pro.
+context. Qwen3 4B generates at about 17.6 tok/s on an iPhone 17 Pro. The catalog also offers
+DeepSeek V4 Pro Qwen3.5 9B (uncensored, Q4_K_M), which needs about 6 GB of memory.
 
 For roleplay in Indonesian, SEA-LION v4 4B (decensored), AI Singapore's Southeast Asian
 fine-tune of Qwen3-VL, wrote the most natural Indonesian of six 4B-class candidates
@@ -275,6 +282,7 @@ replay    per token: dequantize the embedding row on the CPU, replay, read logit
 | Attention | Split-K decode attention (64-position chunks) with online softmax; one workgroup serves all query heads of a KV head (GQA); causal per token in prefill |
 | QK-norm + RoPE | Fused per head, writes the KV cache, quantizes keys/values in registers when int8 |
 | RMSNorm, SiLU·mul, merge | Small kernels; RMSNorm uses one 1024-thread workgroup |
+| Gated DeltaNet (Metal) | A causal conv kernel, then one threadgroup per value head and 16 state columns; each SIMD group keeps 4 columns of the 128×128 recurrent state in registers across the whole prefill chunk, so the state touches memory once per chunk; a separate kernel applies the gated RMSNorm |
 
 ### Weight layouts
 
@@ -302,7 +310,7 @@ in 1.84 GiB.
 
 ## Correctness
 
-`skyla-ref` is a deliberately plain f32 implementation of the qwen3 forward pass. Every GPU
+`skyla-ref` is a deliberately plain f32 implementation of the qwen3 and qwen35 forward passes. Every GPU
 change is checked with `skyla run --check`, which runs both in lockstep and reports the top
 token and the largest logit difference at every step, with the Vulkan validation layer on.
 
@@ -373,8 +381,9 @@ which also holds every measurement behind the numbers above.
 
 ## Limitations
 
-- `qwen3` and `qwen3moe` models, and the text side of `qwen3vl` (head size 128), in three
-  weight formats (Q8_0, Q4_K, Q6_K).
+- `qwen3` and `qwen3moe` models, the text side of `qwen3vl` (head size 128), and `qwen35`
+  on Metal only, in three weight formats (Q8_0, Q4_K, Q6_K). Q4_K_S files that mix in
+  Q5_K tensors do not load.
 - Batch size 1 for generation; one conversation at a time, shared by every browser tab.
 - Prefill slows on long contexts (about 40 tok/s at 4k tokens) because each query in a
   prefill chunk reads the KV cache separately.

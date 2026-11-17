@@ -2,12 +2,12 @@
 using namespace metal;
 
 constant uint D = 128;
+constant uint COLS = 4;
+constant uint ROWS = D / 32;
 
 struct Push {
     uint qkv_off;
     uint qkv_stride;
-    uint z_off;
-    uint z_stride;
     uint alpha_off;
     uint beta_off;
     uint ab_stride;
@@ -16,79 +16,69 @@ struct Push {
     uint s_off;
     uint a_off;
     uint dt_off;
-    uint norm_off;
     uint n_k_head;
     float eps;
 };
 
-static inline float2 group_sum(float2 v, threadgroup float2 *red, uint sg_lane, uint sg_id) {
-    v = simd_sum(v);
-    if (sg_lane == 0) {
-        red[sg_id] = v;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    float2 total = float2(0.0f);
-    for (uint i = 0; i < D / 32; i++) {
-        total += red[i];
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    return total;
+static inline float4 load4(const device float *p) {
+    return float4(*(const device packed_float4 *)p);
 }
 
-// One threadgroup per value head, one thread per state column j. The state is
-// stored as S[i][j] (key dim i, value dim j) so a simdgroup reads a row contiguously.
 kernel void deltanet(
     const device float *w      [[buffer(0)]],
     device float *a            [[buffer(1)]],
     const device uint *ctl     [[buffer(2)]],
     constant Push &p           [[buffer(3)]],
     uint3 wg   [[threadgroup_position_in_grid]],
-    uint3 lid  [[thread_position_in_threadgroup]],
     uint sg_lane [[thread_index_in_simdgroup]],
-    uint sg_id   [[simdgroup_index_in_threadgroup]])
+    uint sg_id   [[simdgroup_index_in_threadgroup]],
+    uint n_sg    [[simdgroups_per_threadgroup]])
 {
-    threadgroup float qs[D];
-    threadgroup float ks[D];
-    threadgroup float2 red[D / 32];
-
     uint h = wg.x;
-    uint j = lid.x;
+    uint col = (wg.y * n_sg + sg_id) * COLS;
+    uint row = sg_lane * ROWS;
     uint kh = h % p.n_k_head;
     uint key_dim = p.n_k_head * D;
-    device float *S = a + p.s_off + h * D * D;
+    device float *S = a + p.s_off + h * D * D + row * D + col;
     float A = w[p.a_off + h];
     float dt = w[p.dt_off + h];
-    float nw = w[p.norm_off + j];
     float scale = rsqrt(float(D));
+
+    float4 s[ROWS];
+    for (uint r = 0; r < ROWS; r++) {
+        s[r] = load4(S + r * D);
+    }
 
     for (uint tok = 0; tok < ctl[2]; tok++) {
         uint base = p.qkv_off + tok * p.qkv_stride;
-        float q = a[base + kh * D + j];
-        float k = a[base + key_dim + kh * D + j];
-        float v = a[base + 2 * key_dim + h * D + j];
-        float2 ss = group_sum(float2(q * q, k * k), red, sg_lane, sg_id);
-        qs[j] = q * scale / max(sqrt(ss.x), p.eps);
-        ks[j] = k / max(sqrt(ss.y), p.eps);
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+        float4 q = load4(a + base + kh * D + row);
+        float4 k = load4(a + base + key_dim + kh * D + row);
+        float4 v = load4(a + base + 2 * key_dim + h * D + col);
+        float2 ss = simd_sum(float2(dot(q, q), dot(k, k)));
+        q *= scale / max(sqrt(ss.x), p.eps);
+        k /= max(sqrt(ss.y), p.eps);
 
         float beta = 1.0f / (1.0f + exp(-a[p.beta_off + tok * p.ab_stride + h]));
         float x = a[p.alpha_off + tok * p.ab_stride + h] + dt;
         float decay = exp((x > 20.0f ? x : log(1.0f + exp(x))) * A);
 
-        float kv = 0.0f;
-        for (uint i = 0; i < D; i++) {
-            kv += S[i * D + j] * ks[i];
+        float4 kv = 0.0f;
+        for (uint r = 0; r < ROWS; r++) {
+            kv += s[r] * k[r];
         }
-        float delta = (v - kv * decay) * beta;
-        float o = 0.0f;
-        for (uint i = 0; i < D; i++) {
-            float s = S[i * D + j] * decay + ks[i] * delta;
-            S[i * D + j] = s;
-            o += s * qs[i];
+        float4 delta = (v - simd_sum(kv) * decay) * beta;
+        float4 o = 0.0f;
+        for (uint r = 0; r < ROWS; r++) {
+            s[r] = s[r] * decay + k[r] * delta;
+            o += s[r] * q[r];
         }
+        o = simd_sum(o);
+        if (sg_lane == 0) {
+            *(device packed_float4 *)(a + p.o_off + tok * p.o_stride + h * D + col) = packed_float4(o);
+        }
+    }
 
-        float r = rsqrt(group_sum(float2(o * o, 0.0f), red, sg_lane, sg_id).x / float(D) + p.eps);
-        float z = a[p.z_off + tok * p.z_stride + h * D + j];
-        a[p.o_off + tok * p.o_stride + h * D + j] = o * r * nw * z / (1.0f + exp(-z));
+    for (uint r = 0; r < ROWS; r++) {
+        *(device packed_float4 *)(S + r * D) = packed_float4(s[r]);
     }
 }
