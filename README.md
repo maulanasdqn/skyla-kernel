@@ -7,8 +7,7 @@ Skyla runs DeepSeek-R1-0528-Qwen3-8B on a Ryzen 7 7730U laptop with no discrete 
 same hardware, and checks every kernel against a plain CPU reference. On an Apple M5
 MacBook it runs on a native Metal backend that multiplies on the GPU's neural accelerators:
 **26.6 tok/s generation and 509 tok/s prompt processing** on the same 8B model, within 9% of
-MLX at generation. It ships a terminal chat and a browser chat UI (Rust/WebAssembly) that
-can switch between models at runtime.
+MLX at generation.
 
 It applies the idea behind [Netra Kernel](https://github.com/NetraRuntime/netra-kernel),
 compile for the exact serving contract and launch only specialized kernels, to a consumer
@@ -140,119 +139,13 @@ set `GLSLC` if it is not found through `VULKAN_SDK` or `PATH`. On macOS the engi
 Metal; `cargo build --release --features skyla-engine/vulkan` builds the MoltenVK path
 instead, for A/B runs.
 
-### Get models
+### Run it
 
-Any GGUF of the `qwen3`, `qwen3moe` or `qwen35` architecture with Q8_0, Q4_K or Q6_K weights works
-(abliterated variants included, e.g. Huihui-Qwen3-30B-A3B-Instruct-2507-abliterated). Keep one
-folder per model under a common directory so the browser UI can list them:
-
-```powershell
-mkdir models\r1-8b, models\qwen3-4b
-curl -L -o models\r1-8b\r1-8b.gguf https://huggingface.co/mradermacher/Josiefied-DeepSeek-R1-0528-Qwen3-8B-abliterated-v1-GGUF/resolve/main/Josiefied-DeepSeek-R1-0528-Qwen3-8B-abliterated-v1.Q4_K_M.gguf
-curl -L -o models\qwen3-4b\qwen3-4b.gguf https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf
-```
-
-The chat template is detected from the GGUF: DeepSeek-R1 (`<｜User｜>…<｜Assistant｜>`) or
-ChatML (`<|im_start|>…<|im_end|>`, Qwen3 Instruct).
-
-### Browser chat UI
-
-The UI is a Leptos app compiled to WebAssembly with [trunk](https://trunkrs.dev/); the
-server is axum and streams tokens over a WebSocket. The engine stays native: Vulkan does
-not run in a browser.
-
-```powershell
-rustup target add wasm32-unknown-unknown
-cargo install trunk --locked
-cd skyla-web; trunk build --release; cd ..
-./target/release/skyla serve models\qwen3-4b\qwen3-4b.gguf
-```
-
-Open <http://127.0.0.1:8080>. The header's model menu lists every GGUF under `models\`
-(`--models <dir>` to point elsewhere) and switches models in a few seconds, marking
-architectures Skyla cannot run yet. Replies stream with the thinking section collapsible,
-**Stop** interrupts generation, **New chat** clears the context, and **Settings** holds
-temperature, top-p, the reply length limit and a system prompt (for example a game
-character's persona). Every reply shows its token count, speed and context use.
-
-### iPhone app
-
-`ios/` holds **Skyla Runtime**, a SwiftUI chat app that runs the same engine on the
-iPhone's GPU through `skyla-ffi`, a static library with a small C interface. It downloads
-models inside the app, or loads any `.gguf` put in its folder in the Files app, with a 4K
-context. Qwen3 4B generates at about 17.6 tok/s on an iPhone 17 Pro. The catalog also offers
-DeepSeek V4 Pro Qwen3.5 9B (uncensored, Q4_K_M), which needs about 6 GB of memory.
-
-For roleplay in Indonesian, SEA-LION v4 4B (decensored), AI Singapore's Southeast Asian
-fine-tune of Qwen3-VL, wrote the most natural Indonesian of six 4B-class candidates
-tested with the same two roleplay scenes; Qwen3 4B abliterated and roleplay fine-tunes
-of Qwen3 4B came out stiff or repetitive.
-
-```sh
-brew install xcodegen
-rustup target add aarch64-apple-ios
-cd ios && xcodegen generate
-xcodebuild -project Skyla.xcodeproj -scheme Skyla -configuration Release \
-  -destination "id=<device UDID>" -allowProvisioningUpdates build
-xcrun devicectl device install app --device <device UDID> build/Build/Products/Release-iphoneos/Skyla.app
-```
-
-Set `DEVELOPMENT_TEAM` in `ios/project.yml` to your team and sign in to Xcode first. The
-Xcode build compiles the Rust engine for `aarch64-apple-ios` itself. With a free Apple
-account the app has to be reinstalled every 7 days.
-
-### Terminal chat
-
-```powershell
-./target/release/skyla chat models\r1-8b\r1-8b.gguf
-```
-
-Replies stream as they are generated, with the model's `<think>` section dimmed. `/reset`
-clears the conversation and an empty line quits.
-
-```
-> Berapa 17 x 23? Jawab singkat.
-<think>
-Hmm, user is asking for the multiplication of 17 and 23 with a request for a short answer.
-...
-17 × 20 = 340, and 17 × 3 = 51, so 340 + 51 = 391. Yeah, that's correct.
-...
-</think>
-
-391
-[18 prompt tokens in 428.5ms | 253 tokens at 7.36 tok/s | context 271/16384]
-```
-
-(`--temp 0`, thinking shortened here.)
-
-## Commands
-
-| Command | What it does |
-|---|---|
-| `skyla serve <model>` | Browser chat UI on `--addr` (default `127.0.0.1:8080`); `--models <dir>` sets the folder listed in the model menu, `--web <dir>` the built UI |
-| `skyla chat <model>` | Terminal chat with the model's own template (DeepSeek-R1 or ChatML) |
-| `skyla run <model> --tokens <ids>` | Greedy decode from token ids; `--check` compares every step with the CPU reference, `--profile` times every GPU stage |
-| `skyla ref <model> --tokens <ids>` | Greedy decode with the CPU reference; `--expect <ids>` teacher-forces another engine's output |
-| `skyla tokenize <model> <text>` | Token ids from the model's tokenizer |
-| `skyla gguf-info <model>` | Metadata and tensor summary |
-| `skyla probe` | Vulkan device, features, limits and memory types |
-| `skyla bench-bw` | Read bandwidth of every GPU memory type and of the CPU |
-
-`chat` options:
-
-| Option | Default | |
-|---|---|---|
-| `--ctx` | 16384 | Context length (KV cache size) |
-| `--kv` | `v8` | KV cache precision: `f16`, `v8` (f16 keys, int8 values) or `q8` |
-| `--max-tokens` | 4096 | Tokens per reply, thinking included |
-| `--temp` / `--top-k` / `--top-p` | 0.6 / 40 / 0.95 | DeepSeek's recommended R1 sampling; `--temp 0` is greedy |
-| `--seed` | time | Sampling seed |
-| `--system` | none | System prompt |
-
-Environment: `SKYLA_VALIDATION=1` enables the Khronos validation layer, `SKYLA_DEVICE=<n>`
-selects a device other than the first integrated GPU. On macOS the Vulkan loader is found
-in `/opt/homebrew/lib`, `/usr/local/lib` or `$VULKAN_SDK/lib`; Homebrew's validation layer
-also needs `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`.
+This repository holds only the kernels, the engine and the CPU reference. The `skyla`
+command line (`run --check`, `ref`, `probe`, `bench-bw`, `chat`, `serve`, `wsp`), the
+tokenizer, chat sessions, the browser UI and the iPhone app live in
+[skyla-platform](https://github.com/maulanasdqn/skyla-platform), which builds against a
+checkout of this repository next to it (`../skyla-kernel`).
 
 ## How it works
 
@@ -321,8 +214,6 @@ token and the largest logit difference at every step, with the Vulkan validation
   Metal backend matches the reference with no top-1 disagreements on all five test
   models, including the MoE; the MoltenVK path also runs clean under the validation
   layer.
-- The tokenizer produces ids identical to `llama-tokenize` on emoji, CJK, code, CRLF,
-  contractions, numbers and full chat prompts.
 
 ## Findings along the way
 
@@ -365,15 +256,7 @@ token and the largest logit difference at every step, with the Vulkan validation
 | `skyla-shaders` | GLSL compute kernels, compiled to SPIR-V at build time, with 64- and 32-lane variants of the subgroup kernels |
 | `skyla-gguf` | Memory-mapped GGUF reader and F32/F16/Q8_0/Q4_K/Q6_K dequantization |
 | `skyla-ref` | f32 CPU reference forward pass and YaRN RoPE tables |
-| `skyla-tok` | Byte-level BPE tokenizer read from GGUF metadata |
 | `skyla-engine` | Weight planner, activation arena, KV layouts, recorded decode and prefill graphs |
-| `skyla-chat` | Chat sessions: template detection (DeepSeek-R1, ChatML), sampling, UTF-8 streaming, `<think>` tracking |
-| `skyla-types` | Messages shared by the server and the WebAssembly UI |
-| `skyla-server` | axum server: WebSocket streaming with stop and reset, model catalog and switching, static UI; the engine runs on its own thread |
-| `skyla-web` | Leptos chat UI compiled to WebAssembly |
-| `skyla-cli` | The `skyla` binary |
-| `skyla-ffi` | C interface to chat sessions (open, streaming chat, cancel, reset), built as a static library for the iOS app |
-| `ios/` | SwiftUI iPhone app (XcodeGen project) |
 
 Code conventions: crates live at the repository root, source files stay under 200 lines,
 and the code carries no comments; design notes live in [docs/roadmap.md](docs/roadmap.md),
@@ -384,11 +267,9 @@ which also holds every measurement behind the numbers above.
 - `qwen3` and `qwen3moe` models, the text side of `qwen3vl` (head size 128), and `qwen35`
   on Metal only, in three weight formats (Q8_0, Q4_K, Q6_K). Q4_K_S files that mix in
   Q5_K tensors do not load.
-- Batch size 1 for generation; one conversation at a time, shared by every browser tab.
+- Batch size 1 for generation.
 - Prefill slows on long contexts (about 40 tok/s at 4k tokens) because each query in a
   prefill chunk reads the KV cache separately.
-- Earlier turns keep their `<think>` text in context, unlike the reference chat template,
-  to avoid re-processing them.
 - Tuned on two machines. It runs on Vulkan 1.3 GPUs with FP16, 8/16-bit storage and a
   subgroup size of 32 or 64, and on Apple silicon with Metal 4; only the Vega 8 and the
   M5 have been checked. Earlier Apple GPUs should run the Metal backend but are untested.
@@ -397,7 +278,7 @@ which also holds every measurement behind the numbers above.
 
 ## Roadmap
 
-See [docs/roadmap.md](docs/roadmap.md). Next: a larger prefill chunk for MoE on the M5, sharing KV reads across a prefill chunk, an OpenAI-compatible endpoint for game engines, and a
+See [docs/roadmap.md](docs/roadmap.md). Next: a larger prefill chunk for MoE on the M5, sharing KV reads across a prefill chunk, and a
 `skyla compile` step that runs the tactic sweeps on the target and stores the evidence.
 
 ## License
